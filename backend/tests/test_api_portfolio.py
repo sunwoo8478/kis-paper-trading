@@ -20,6 +20,28 @@ def test_portfolio_reflects_filled_order(tmp_path, monkeypatch):
         assert body["positions"] == [{"code": "005930", "quantity": 10, "avg_price": 1000.0}]
 
 
+def test_portfolio_falls_back_to_avg_price_when_provider_fails(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("INITIAL_CAPITAL", "1000000")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+
+    with TestClient(app) as client:
+        client.post("/orders", json={"code": "005930", "side": "buy", "quantity": 10})
+        client.post("/orders", json={"code": "000660", "side": "buy", "quantity": 5})
+
+        def failing_for_005930(self, code):
+            if code == "005930":
+                raise ValueError("no price data available")
+            return 2000.0
+
+        monkeypatch.setattr(PykrxProvider, "get_latest_price", failing_for_005930)
+
+        response = client.get("/portfolio")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["evaluated_value"] == 10_000.0 + 10_000.0
+
+
 def test_portfolio_history_starts_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)

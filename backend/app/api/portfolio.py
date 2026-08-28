@@ -12,7 +12,12 @@ def get_portfolio(request: Request):
     provider = request.app.state.provider
     cash = repository.get_cash_balance(conn)
     positions = repository.get_all_positions(conn)
-    current_prices = {p.code: provider.get_latest_price(p.code) for p in positions}
+    current_prices = {}
+    for p in positions:
+        try:
+            current_prices[p.code] = provider.get_latest_price(p.code)
+        except Exception:
+            current_prices[p.code] = p.avg_price
     value = compute_portfolio_value(cash, positions, current_prices)
     return {
         **value,

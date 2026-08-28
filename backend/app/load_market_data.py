@@ -15,7 +15,11 @@ def load_all(conn: sqlite3.Connection, provider: MarketDataProvider, lookback_da
     start = end - timedelta(days=lookback_days)
 
     for stock in stocks:
-        bars = provider.get_ohlcv(stock.code, start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+        try:
+            bars = provider.get_ohlcv(stock.code, start.strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+        except Exception as exc:
+            print(f"warning: failed to load {stock.code}: {exc}")
+            continue
         if bars:
             repository.upsert_price_history(conn, stock.code, bars)
 

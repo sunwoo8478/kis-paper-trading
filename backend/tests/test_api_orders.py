@@ -27,3 +27,17 @@ def test_create_order_insufficient_cash_returns_400(tmp_path, monkeypatch):
     with TestClient(app) as client:
         response = client.post("/orders", json={"code": "005930", "side": "buy", "quantity": 10})
         assert response.status_code == 400
+
+
+def test_create_order_no_price_data_returns_400(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("INITIAL_CAPITAL", "1000000")
+
+    def raise_no_price(self, code):
+        raise ValueError("no price data available")
+
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", raise_no_price)
+
+    with TestClient(app) as client:
+        response = client.post("/orders", json={"code": "005930", "side": "buy", "quantity": 10})
+        assert response.status_code == 400

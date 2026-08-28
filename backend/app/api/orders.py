@@ -17,7 +17,7 @@ class OrderRequest(BaseModel):
 def create_order(req: OrderRequest, request: Request):
     try:
         result = request.app.state.executor.place_order(req.code, req.side, req.quantity)
-    except OrderExecutionError as exc:
+    except (OrderExecutionError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {
         "order_id": result.order_id,
