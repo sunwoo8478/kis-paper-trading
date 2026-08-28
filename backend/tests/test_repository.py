@@ -144,3 +144,54 @@ def test_watchlist_add_remove_and_list(conn):
     assert [w["code"] for w in repository.get_watchlist(conn)] == ["000660", "005930"]
     repository.remove_watchlist(conn, "000660")
     assert [w["code"] for w in repository.get_watchlist(conn)] == ["005930"]
+
+
+def test_get_candidates_combines_top_change_top_volume_watchlist_and_positions(conn):
+    repository.upsert_stocks(
+        conn,
+        [
+            _FakeStock(code="000001", name="big-mover", market="KOSPI"),
+            _FakeStock(code="000002", name="high-volume", market="KOSPI"),
+            _FakeStock(code="000003", name="quiet", market="KOSPI"),
+            _FakeStock(code="000004", name="watched-only", market="KOSPI"),
+            _FakeStock(code="000005", name="held-only", market="KOSPI"),
+        ],
+    )
+    bars = {
+        "000001": [(69000, 900_000), (90000, 900_000)],  # +30% change, low volume
+        "000002": [(70000, 100), (70100, 5_000_000)],  # tiny change, huge volume
+        "000003": [(70000, 100), (70050, 100)],  # neither
+        "000004": [(70000, 100), (70050, 100)],  # only via watchlist
+        "000005": [(70000, 100), (70050, 100)],  # only via position
+    }
+    for code, prices in bars.items():
+        repository.upsert_price_history(
+            conn,
+            code,
+            [
+                _FakeBar(date="2026-08-26", open=prices[0][0], high=prices[0][0], low=prices[0][0], close=prices[0][0], volume=prices[0][1]),
+                _FakeBar(date="2026-08-27", open=prices[1][0], high=prices[1][0], low=prices[1][0], close=prices[1][0], volume=prices[1][1]),
+            ],
+        )
+    repository.add_watchlist(conn, "000004")
+    repository.apply_buy(conn, "000005", 1, 70050.0)
+
+    candidates = repository.get_candidates(conn, top_change=1, top_volume=1)
+
+    codes = {c["code"] for c in candidates}
+    assert codes == {"000001", "000002", "000004", "000005"}
+    assert "000003" not in codes
+
+
+def test_insert_and_get_agent_runs(conn):
+    run_id = repository.insert_agent_run(
+        conn,
+        candidates='["005930"]',
+        decisions='[{"code": "005930", "action": "buy", "quantity": 1}]',
+        reasoning="strong momentum",
+        order_ids="[1]",
+    )
+    runs = repository.get_agent_runs(conn)
+    assert runs[0]["id"] == run_id
+    assert runs[0]["candidates"] == '["005930"]'
+    assert runs[0]["reasoning"] == "strong momentum"

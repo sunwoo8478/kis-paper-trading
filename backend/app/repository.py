@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     evaluated_value REAL NOT NULL,
     pnl REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    candidates TEXT NOT NULL,
+    decisions TEXT NOT NULL,
+    reasoning TEXT NOT NULL,
+    order_ids TEXT NOT NULL
+);
 """
 
 
@@ -265,3 +274,94 @@ def get_watchlist(conn: sqlite3.Connection) -> list[dict]:
         """
     ).fetchall()
     return [_quote_row_to_dict(row) for row in rows]
+
+
+def get_candidates(conn: sqlite3.Connection, top_change: int = 30, top_volume: int = 20) -> list[dict]:
+    rows = conn.execute(
+        f"""
+        SELECT s.code, s.name, s.market, latest.close, prev.close, latest_vol.volume
+        FROM stocks s
+        {_QUOTE_JOIN}
+        LEFT JOIN (
+            SELECT code, volume, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+            FROM price_history
+        ) latest_vol ON latest_vol.code = s.code AND latest_vol.rn = 1
+        WHERE latest.close IS NOT NULL
+        """
+    ).fetchall()
+
+    quotes = []
+    for code, name, market, last_price, prev_close, volume in rows:
+        change_pct = None
+        if last_price is not None and prev_close:
+            change_pct = (last_price - prev_close) / prev_close * 100
+        quotes.append(
+            {
+                "code": code,
+                "name": name,
+                "market": market,
+                "last_price": last_price,
+                "prev_close": prev_close,
+                "change_pct": change_pct,
+                "volume": volume,
+            }
+        )
+
+    by_change = sorted(
+        (q for q in quotes if q["change_pct"] is not None),
+        key=lambda q: abs(q["change_pct"]),
+        reverse=True,
+    )[:top_change]
+    by_volume = sorted(
+        (q for q in quotes if q["volume"] is not None),
+        key=lambda q: q["volume"],
+        reverse=True,
+    )[:top_volume]
+
+    watchlist_codes = {w["code"] for w in get_watchlist(conn)}
+    position_codes = {p.code for p in get_all_positions(conn)}
+    selected_codes = (
+        {q["code"] for q in by_change}
+        | {q["code"] for q in by_volume}
+        | watchlist_codes
+        | position_codes
+    )
+
+    by_code = {q["code"]: q for q in quotes}
+    return sorted(
+        (by_code[code] for code in selected_codes if code in by_code),
+        key=lambda q: q["code"],
+    )
+
+
+def insert_agent_run(
+    conn: sqlite3.Connection,
+    candidates: str,
+    decisions: str,
+    reasoning: str,
+    order_ids: str,
+) -> int:
+    ts = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO agent_runs (ts, candidates, decisions, reasoning, order_ids) VALUES (?, ?, ?, ?, ?)",
+        (ts, candidates, decisions, reasoning, order_ids),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_agent_runs(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, ts, candidates, decisions, reasoning, order_ids FROM agent_runs ORDER BY id DESC"
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "ts": r[1],
+            "candidates": r[2],
+            "decisions": r[3],
+            "reasoning": r[4],
+            "order_ids": r[5],
+        }
+        for r in rows
+    ]
