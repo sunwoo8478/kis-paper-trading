@@ -174,13 +174,46 @@ def upsert_stocks(conn: sqlite3.Connection, stocks: list) -> None:
     conn.commit()
 
 
+_QUOTE_JOIN = """
+    LEFT JOIN (
+        SELECT code, close, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+        FROM price_history
+    ) latest ON latest.code = s.code AND latest.rn = 1
+    LEFT JOIN (
+        SELECT code, close, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+        FROM price_history
+    ) prev ON prev.code = s.code AND prev.rn = 2
+"""
+
+
+def _quote_row_to_dict(row: tuple) -> dict:
+    code, name, market, last_price, prev_close = row
+    change_pct = None
+    if last_price is not None and prev_close:
+        change_pct = (last_price - prev_close) / prev_close * 100
+    return {
+        "code": code,
+        "name": name,
+        "market": market,
+        "last_price": last_price,
+        "prev_close": prev_close,
+        "change_pct": change_pct,
+    }
+
+
 def search_stocks(conn: sqlite3.Connection, query: str) -> list[dict]:
     like = f"%{query}%"
     rows = conn.execute(
-        "SELECT code, name, market FROM stocks WHERE code LIKE ? OR name LIKE ? ORDER BY code",
+        f"""
+        SELECT s.code, s.name, s.market, latest.close, prev.close
+        FROM stocks s
+        {_QUOTE_JOIN}
+        WHERE s.code LIKE ? OR s.name LIKE ?
+        ORDER BY s.code
+        """,
         (like, like),
     ).fetchall()
-    return [{"code": r[0], "name": r[1], "market": r[2]} for r in rows]
+    return [_quote_row_to_dict(row) for row in rows]
 
 
 def upsert_price_history(conn: sqlite3.Connection, code: str, bars: list) -> None:
@@ -214,6 +247,21 @@ def remove_watchlist(conn: sqlite3.Connection, code: str) -> None:
     conn.commit()
 
 
-def get_watchlist(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT code FROM watchlist ORDER BY code").fetchall()
-    return [r[0] for r in rows]
+def get_watchlist(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT w.code, COALESCE(s.name, w.code), COALESCE(s.market, ''), latest.close, prev.close
+        FROM watchlist w
+        LEFT JOIN stocks s ON s.code = w.code
+        LEFT JOIN (
+            SELECT code, close, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+            FROM price_history
+        ) latest ON latest.code = w.code AND latest.rn = 1
+        LEFT JOIN (
+            SELECT code, close, ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+            FROM price_history
+        ) prev ON prev.code = w.code AND prev.rn = 2
+        ORDER BY w.code
+        """
+    ).fetchall()
+    return [_quote_row_to_dict(row) for row in rows]

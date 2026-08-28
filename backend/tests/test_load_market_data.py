@@ -26,7 +26,16 @@ def test_load_all_inserts_stocks_and_price_history():
 
     assert count == 1
     stocks = repository.search_stocks(conn, "005930")
-    assert stocks == [{"code": "005930", "name": "삼성전자", "market": "KOSPI"}]
+    assert stocks == [
+        {
+            "code": "005930",
+            "name": "삼성전자",
+            "market": "KOSPI",
+            "last_price": 70500,
+            "prev_close": None,
+            "change_pct": None,
+        }
+    ]
     history = repository.get_price_history(conn, "005930")
     assert len(history) == 1
     assert history[0]["close"] == 70500

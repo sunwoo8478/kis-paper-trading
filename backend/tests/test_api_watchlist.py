@@ -14,7 +14,7 @@ def test_watchlist_add_list_remove(tmp_path, monkeypatch):
 
         response = client.get("/watchlist")
         assert response.status_code == 200
-        assert response.json() == ["005930"]
+        assert [w["code"] for w in response.json()] == ["005930"]
 
         response = client.delete("/watchlist/005930")
         assert response.status_code == 200

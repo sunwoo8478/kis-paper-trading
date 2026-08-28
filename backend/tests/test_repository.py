@@ -85,14 +85,41 @@ class _FakeBar:
 def test_upsert_and_search_stocks(conn):
     repository.upsert_stocks(conn, [_FakeStock(code="005930", name="삼성전자", market="KOSPI")])
     results = repository.search_stocks(conn, "삼성")
-    assert results == [{"code": "005930", "name": "삼성전자", "market": "KOSPI"}]
+    assert results == [
+        {
+            "code": "005930",
+            "name": "삼성전자",
+            "market": "KOSPI",
+            "last_price": None,
+            "prev_close": None,
+            "change_pct": None,
+        }
+    ]
+
+
+def test_search_stocks_computes_change_pct_from_price_history(conn):
+    repository.upsert_stocks(conn, [_FakeStock(code="005930", name="삼성전자", market="KOSPI")])
+    repository.upsert_price_history(
+        conn,
+        "005930",
+        [
+            _FakeBar(date="2026-08-26", open=69000, high=70500, low=68500, close=70000, volume=900_000),
+            _FakeBar(date="2026-08-27", open=70000, high=71000, low=69500, close=70700, volume=1_000_000),
+        ],
+    )
+    results = repository.search_stocks(conn, "005930")
+    assert results[0]["last_price"] == 70700
+    assert results[0]["prev_close"] == 70000
+    assert results[0]["change_pct"] == pytest.approx(1.0)
 
 
 def test_upsert_stocks_updates_existing_row(conn):
     repository.upsert_stocks(conn, [_FakeStock(code="005930", name="old", market="KOSPI")])
     repository.upsert_stocks(conn, [_FakeStock(code="005930", name="삼성전자", market="KOSPI")])
     results = repository.search_stocks(conn, "005930")
-    assert results == [{"code": "005930", "name": "삼성전자", "market": "KOSPI"}]
+    assert results[0]["code"] == "005930"
+    assert results[0]["name"] == "삼성전자"
+    assert results[0]["market"] == "KOSPI"
 
 
 def test_upsert_and_get_price_history(conn):
@@ -105,8 +132,15 @@ def test_upsert_and_get_price_history(conn):
 
 
 def test_watchlist_add_remove_and_list(conn):
+    repository.upsert_stocks(
+        conn,
+        [
+            _FakeStock(code="005930", name="삼성전자", market="KOSPI"),
+            _FakeStock(code="000660", name="SK하이닉스", market="KOSPI"),
+        ],
+    )
     repository.add_watchlist(conn, "005930")
     repository.add_watchlist(conn, "000660")
-    assert repository.get_watchlist(conn) == ["000660", "005930"]
+    assert [w["code"] for w in repository.get_watchlist(conn)] == ["000660", "005930"]
     repository.remove_watchlist(conn, "000660")
-    assert repository.get_watchlist(conn) == ["005930"]
+    assert [w["code"] for w in repository.get_watchlist(conn)] == ["005930"]
