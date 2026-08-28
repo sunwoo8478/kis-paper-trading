@@ -163,3 +163,57 @@ def get_snapshots(conn: sqlite3.Connection) -> list[dict]:
         {"ts": r[0], "total_value": r[1], "cash": r[2], "evaluated_value": r[3], "pnl": r[4]}
         for r in rows
     ]
+
+
+def upsert_stocks(conn: sqlite3.Connection, stocks: list) -> None:
+    conn.executemany(
+        "INSERT INTO stocks (code, name, market) VALUES (?, ?, ?) "
+        "ON CONFLICT(code) DO UPDATE SET name = excluded.name, market = excluded.market",
+        [(s.code, s.name, s.market) for s in stocks],
+    )
+    conn.commit()
+
+
+def search_stocks(conn: sqlite3.Connection, query: str) -> list[dict]:
+    like = f"%{query}%"
+    rows = conn.execute(
+        "SELECT code, name, market FROM stocks WHERE code LIKE ? OR name LIKE ? ORDER BY code",
+        (like, like),
+    ).fetchall()
+    return [{"code": r[0], "name": r[1], "market": r[2]} for r in rows]
+
+
+def upsert_price_history(conn: sqlite3.Connection, code: str, bars: list) -> None:
+    conn.executemany(
+        "INSERT INTO price_history (code, date, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(code, date) DO UPDATE SET open=excluded.open, high=excluded.high, "
+        "low=excluded.low, close=excluded.close, volume=excluded.volume",
+        [(code, b.date, b.open, b.high, b.low, b.close, b.volume) for b in bars],
+    )
+    conn.commit()
+
+
+def get_price_history(conn: sqlite3.Connection, code: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT date, open, high, low, close, volume FROM price_history WHERE code = ? ORDER BY date",
+        (code,),
+    ).fetchall()
+    return [
+        {"date": r[0], "open": r[1], "high": r[2], "low": r[3], "close": r[4], "volume": r[5]}
+        for r in rows
+    ]
+
+
+def add_watchlist(conn: sqlite3.Connection, code: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO watchlist (code) VALUES (?)", (code,))
+    conn.commit()
+
+
+def remove_watchlist(conn: sqlite3.Connection, code: str) -> None:
+    conn.execute("DELETE FROM watchlist WHERE code = ?", (code,))
+    conn.commit()
+
+
+def get_watchlist(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT code FROM watchlist ORDER BY code").fetchall()
+    return [r[0] for r in rows]

@@ -60,3 +60,53 @@ def test_insert_snapshot_and_get_snapshots(conn):
     snapshots = repository.get_snapshots(conn)
     assert len(snapshots) == 1
     assert snapshots[0]["total_value"] == 1_000_000.0
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class _FakeStock:
+    code: str
+    name: str
+    market: str
+
+
+@dataclass
+class _FakeBar:
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+def test_upsert_and_search_stocks(conn):
+    repository.upsert_stocks(conn, [_FakeStock(code="005930", name="삼성전자", market="KOSPI")])
+    results = repository.search_stocks(conn, "삼성")
+    assert results == [{"code": "005930", "name": "삼성전자", "market": "KOSPI"}]
+
+
+def test_upsert_stocks_updates_existing_row(conn):
+    repository.upsert_stocks(conn, [_FakeStock(code="005930", name="old", market="KOSPI")])
+    repository.upsert_stocks(conn, [_FakeStock(code="005930", name="삼성전자", market="KOSPI")])
+    results = repository.search_stocks(conn, "005930")
+    assert results == [{"code": "005930", "name": "삼성전자", "market": "KOSPI"}]
+
+
+def test_upsert_and_get_price_history(conn):
+    bar = _FakeBar(date="2026-08-27", open=70000, high=71000, low=69500, close=70500, volume=1_000_000)
+    repository.upsert_price_history(conn, "005930", [bar])
+    history = repository.get_price_history(conn, "005930")
+    assert history == [
+        {"date": "2026-08-27", "open": 70000, "high": 71000, "low": 69500, "close": 70500, "volume": 1_000_000}
+    ]
+
+
+def test_watchlist_add_remove_and_list(conn):
+    repository.add_watchlist(conn, "005930")
+    repository.add_watchlist(conn, "000660")
+    assert repository.get_watchlist(conn) == ["000660", "005930"]
+    repository.remove_watchlist(conn, "000660")
+    assert repository.get_watchlist(conn) == ["005930"]
