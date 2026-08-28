@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import repository
+from .api import stocks, watchlist
 from .config import load_settings
 from .execution.simulated_executor import SimulatedExecutor
 from .market_data.pykrx_provider import PykrxProvider
@@ -31,6 +32,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="KIS Paper Trading API", lifespan=lifespan)
+
+app.include_router(stocks.router)
+app.include_router(watchlist.router)
 
 
 @app.get("/health")
