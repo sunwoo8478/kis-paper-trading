@@ -1,0 +1,62 @@
+import sqlite3
+
+import pytest
+
+from app import repository
+
+
+@pytest.fixture
+def conn():
+    connection = sqlite3.connect(":memory:")
+    repository.init_db(connection, initial_capital=1_000_000.0)
+    yield connection
+    connection.close()
+
+
+def test_init_db_sets_initial_cash_balance(conn):
+    assert repository.get_cash_balance(conn) == 1_000_000.0
+
+
+def test_apply_buy_creates_position_and_deducts_cash(conn):
+    repository.apply_buy(conn, "005930", 10, 70000.0)
+    position = repository.get_position(conn, "005930")
+    assert position.quantity == 10
+    assert position.avg_price == 70000.0
+    assert repository.get_cash_balance(conn) == 300_000.0
+
+
+def test_apply_buy_twice_averages_position(conn):
+    repository.apply_buy(conn, "005930", 10, 70000.0)
+    repository.apply_buy(conn, "005930", 10, 72000.0)
+    position = repository.get_position(conn, "005930")
+    assert position.quantity == 20
+    assert position.avg_price == pytest.approx(71000.0)
+
+
+def test_apply_sell_returns_realized_pnl_and_credits_cash(conn):
+    repository.apply_buy(conn, "005930", 10, 70000.0)
+    realized_pnl = repository.apply_sell(conn, "005930", 10, 75000.0)
+    assert realized_pnl == pytest.approx(50_000.0)
+    assert repository.get_position(conn, "005930") is None
+    assert repository.get_cash_balance(conn) == pytest.approx(1_050_000.0)
+
+
+def test_apply_sell_without_position_raises(conn):
+    with pytest.raises(ValueError):
+        repository.apply_sell(conn, "005930", 1, 70000.0)
+
+
+def test_record_order_and_get_orders(conn):
+    order_id = repository.record_order(conn, "005930", "buy", 10, 70000.0)
+    orders = repository.get_orders(conn)
+    assert orders[0]["id"] == order_id
+    assert orders[0]["code"] == "005930"
+    assert orders[0]["side"] == "buy"
+    assert orders[0]["status"] == "filled"
+
+
+def test_insert_snapshot_and_get_snapshots(conn):
+    repository.insert_snapshot(conn, total_value=1_000_000.0, cash=1_000_000.0, evaluated_value=0.0, pnl=0.0)
+    snapshots = repository.get_snapshots(conn)
+    assert len(snapshots) == 1
+    assert snapshots[0]["total_value"] == 1_000_000.0
