@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import repository
-from .api import agent, orders, portfolio, stocks, watchlist
+from .api import agent, alerts, analytics, journal, market, news, orders, portfolio, stocks, watchlist
 from .config import load_settings
 from .execution.simulated_executor import SimulatedExecutor
+from .market_data.naver_provider import NaverRealtimeProvider
 from .market_data.pykrx_provider import PykrxProvider
 
 
@@ -16,9 +17,12 @@ async def lifespan(app: FastAPI):
     conn = sqlite3.connect(settings.db_path, check_same_thread=False)
     repository.init_db(conn, settings.initial_capital)
 
-    if settings.market_data_provider != "pykrx":
+    if settings.market_data_provider == "pykrx":
+        provider = PykrxProvider()
+    elif settings.market_data_provider == "naver_realtime":
+        provider = NaverRealtimeProvider()
+    else:
         raise ValueError(f"unknown market data provider: {settings.market_data_provider}")
-    provider = PykrxProvider()
 
     if settings.order_executor != "simulated":
         raise ValueError(f"unknown order executor: {settings.order_executor}")
@@ -34,6 +38,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="KIS Paper Trading API", lifespan=lifespan)
 
 app.include_router(agent.router)
+app.include_router(alerts.router)
+app.include_router(analytics.router)
+app.include_router(journal.router)
+app.include_router(market.router)
+app.include_router(news.router)
 app.include_router(orders.router)
 app.include_router(portfolio.router)
 app.include_router(stocks.router)

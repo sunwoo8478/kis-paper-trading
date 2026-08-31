@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from .. import repository
 
@@ -13,3 +13,12 @@ def search_stocks(request: Request, q: str = Query(default="")):
 @router.get("/stocks/{code}/history")
 def stock_history(code: str, request: Request):
     return repository.get_price_history(request.app.state.conn, code)
+
+
+@router.get("/stocks/{code}/quote")
+def stock_quote(code: str, request: Request):
+    try:
+        price = request.app.state.provider.get_latest_price(code)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"code": code, "price": price}

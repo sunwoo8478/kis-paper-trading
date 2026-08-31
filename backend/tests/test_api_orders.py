@@ -18,6 +18,10 @@ def test_create_order_then_list_orders(tmp_path, monkeypatch):
         assert response.status_code == 200
         assert len(response.json()) == 1
 
+        history = client.get("/portfolio/history").json()
+        assert len(history) == 1
+        assert history[0]["total_value"] == 1_000_000.0
+
 
 def test_create_order_insufficient_cash_returns_400(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))

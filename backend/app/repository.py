@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS orders (
     quantity INTEGER NOT NULL,
     price REAL NOT NULL,
     filled_at TEXT NOT NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    order_type TEXT NOT NULL DEFAULT 'market',
+    limit_price REAL
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
@@ -64,11 +66,32 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     reasoning TEXT NOT NULL,
     order_ids TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS price_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    target_price REAL NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    triggered_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS trade_journal (
+    code TEXT PRIMARY KEY,
+    thesis TEXT NOT NULL DEFAULT '',
+    invalidation TEXT NOT NULL DEFAULT '',
+    target_price REAL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    updated_at TEXT NOT NULL
+);
 """
 
 
 def init_db(conn: sqlite3.Connection, initial_capital: float = 10_000_000.0) -> None:
     conn.executescript(SCHEMA)
+    _ensure_column(conn, "orders", "order_type", "TEXT NOT NULL DEFAULT 'market'")
+    _ensure_column(conn, "orders", "limit_price", "REAL")
     conn.execute(
         "INSERT OR IGNORE INTO account (id, cash_balance, initial_capital) VALUES (1, ?, ?)",
         (initial_capital, initial_capital),
@@ -76,8 +99,19 @@ def init_db(conn: sqlite3.Connection, initial_capital: float = 10_000_000.0) -> 
     conn.commit()
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def get_cash_balance(conn: sqlite3.Connection) -> float:
     row = conn.execute("SELECT cash_balance FROM account WHERE id = 1").fetchone()
+    return row[0]
+
+
+def get_initial_capital(conn: sqlite3.Connection) -> float:
+    row = conn.execute("SELECT initial_capital FROM account WHERE id = 1").fetchone()
     return row[0]
 
 
@@ -95,7 +129,7 @@ def get_all_positions(conn: sqlite3.Connection) -> list[portfolio.Position]:
     return [portfolio.Position(code=r[0], quantity=r[1], avg_price=r[2]) for r in rows]
 
 
-def apply_buy(conn: sqlite3.Connection, code: str, quantity: int, price: float) -> None:
+def apply_buy(conn: sqlite3.Connection, code: str, quantity: int, price: float, commit: bool = True) -> None:
     existing = get_position(conn, code)
     new_position = portfolio.apply_buy_fill(existing, code, quantity, price)
     conn.execute(
@@ -107,10 +141,11 @@ def apply_buy(conn: sqlite3.Connection, code: str, quantity: int, price: float) 
         "UPDATE account SET cash_balance = cash_balance - ? WHERE id = 1",
         (price * quantity,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def apply_sell(conn: sqlite3.Connection, code: str, quantity: int, price: float) -> float:
+def apply_sell(conn: sqlite3.Connection, code: str, quantity: int, price: float, commit: bool = True) -> float:
     existing = get_position(conn, code)
     if existing is None:
         raise ValueError(f"no position for {code}")
@@ -126,30 +161,173 @@ def apply_sell(conn: sqlite3.Connection, code: str, quantity: int, price: float)
         "UPDATE account SET cash_balance = cash_balance + ? WHERE id = 1",
         (price * quantity,),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return realized_pnl
 
 
-def record_order(conn: sqlite3.Connection, code: str, side: str, quantity: int, price: float) -> int:
+def record_order(
+    conn: sqlite3.Connection,
+    code: str,
+    side: str,
+    quantity: int,
+    price: float,
+    status: str = "filled",
+    order_type: str = "market",
+    limit_price: float | None = None,
+    commit: bool = True,
+) -> int:
     filled_at = datetime.now(timezone.utc).isoformat()
     cursor = conn.execute(
-        "INSERT INTO orders (code, side, quantity, price, filled_at, status) VALUES (?, ?, ?, ?, ?, ?)",
-        (code, side, quantity, price, filled_at, "filled"),
+        "INSERT INTO orders (code, side, quantity, price, filled_at, status, order_type, limit_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (code, side, quantity, price, filled_at, status, order_type, limit_price),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cursor.lastrowid
 
 
 def get_orders(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, code, side, quantity, price, filled_at, status FROM orders ORDER BY id DESC"
+        "SELECT id, code, side, quantity, price, filled_at, status, order_type, limit_price FROM orders ORDER BY id DESC"
     ).fetchall()
     return [
         {
             "id": r[0], "code": r[1], "side": r[2], "quantity": r[3],
             "price": r[4], "filled_at": r[5], "status": r[6],
+            "order_type": r[7], "limit_price": r[8],
         }
         for r in rows
+    ]
+
+
+def get_pending_orders(conn: sqlite3.Connection) -> list[dict]:
+    return [order for order in get_orders(conn) if order["status"] == "pending"]
+
+
+def fill_pending_order(conn: sqlite3.Connection, order_id: int, price: float) -> None:
+    filled_at = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "UPDATE orders SET price = ?, filled_at = ?, status = 'filled' WHERE id = ? AND status = 'pending'",
+        (price, filled_at, order_id),
+    )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        raise ValueError("pending order not found")
+    conn.commit()
+
+
+def cancel_pending_order(conn: sqlite3.Connection, order_id: int) -> bool:
+    cursor = conn.execute(
+        "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+        (order_id,),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def get_pending_commitments(conn: sqlite3.Connection) -> tuple[float, dict[str, int]]:
+    rows = conn.execute(
+        "SELECT code, side, quantity, limit_price FROM orders WHERE status = 'pending'"
+    ).fetchall()
+    buy_value = sum((row[3] or 0) * row[2] for row in rows if row[1] == "buy")
+    sell_quantities: dict[str, int] = {}
+    for code, side, quantity, _ in rows:
+        if side == "sell":
+            sell_quantities[code] = sell_quantities.get(code, 0) + quantity
+    return buy_value, sell_quantities
+
+
+def create_price_alert(conn: sqlite3.Connection, code: str, direction: str, target_price: float) -> int:
+    created_at = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO price_alerts (code, direction, target_price, active, created_at) VALUES (?, ?, ?, 1, ?)",
+        (code, direction, target_price, created_at),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_price_alerts(conn: sqlite3.Connection, code: str | None = None) -> list[dict]:
+    if code is None:
+        rows = conn.execute(
+            "SELECT id, code, direction, target_price, active, created_at, triggered_at FROM price_alerts ORDER BY id DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, code, direction, target_price, active, created_at, triggered_at FROM price_alerts WHERE code = ? ORDER BY id DESC",
+            (code,),
+        ).fetchall()
+    return [
+        {
+            "id": row[0], "code": row[1], "direction": row[2], "target_price": row[3],
+            "active": bool(row[4]), "created_at": row[5], "triggered_at": row[6],
+        }
+        for row in rows
+    ]
+
+
+def trigger_price_alert(conn: sqlite3.Connection, alert_id: int) -> None:
+    triggered_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE price_alerts SET active = 0, triggered_at = ? WHERE id = ?",
+        (triggered_at, alert_id),
+    )
+    conn.commit()
+
+
+def delete_price_alert(conn: sqlite3.Connection, alert_id: int) -> bool:
+    cursor = conn.execute("DELETE FROM price_alerts WHERE id = ?", (alert_id,))
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def upsert_journal_entry(
+    conn: sqlite3.Connection,
+    code: str,
+    thesis: str,
+    invalidation: str,
+    target_price: float | None,
+    tags: str,
+) -> dict:
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO trade_journal (code, thesis, invalidation, target_price, tags, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code) DO UPDATE SET
+            thesis = excluded.thesis,
+            invalidation = excluded.invalidation,
+            target_price = excluded.target_price,
+            tags = excluded.tags,
+            updated_at = excluded.updated_at
+        """,
+        (code, thesis, invalidation, target_price, tags, updated_at),
+    )
+    conn.commit()
+    return get_journal_entry(conn, code)
+
+
+def get_journal_entry(conn: sqlite3.Connection, code: str) -> dict | None:
+    row = conn.execute(
+        "SELECT code, thesis, invalidation, target_price, tags, updated_at FROM trade_journal WHERE code = ?",
+        (code,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "code": row[0], "thesis": row[1], "invalidation": row[2],
+        "target_price": row[3], "tags": row[4], "updated_at": row[5],
+    }
+
+
+def get_journal_entries(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT code, thesis, invalidation, target_price, tags, updated_at FROM trade_journal ORDER BY updated_at DESC"
+    ).fetchall()
+    return [
+        {"code": row[0], "thesis": row[1], "invalidation": row[2], "target_price": row[3], "tags": row[4], "updated_at": row[5]}
+        for row in rows
     ]
 
 

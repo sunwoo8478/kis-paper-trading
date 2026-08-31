@@ -486,6 +486,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pykrx" },
+    { name = "requests" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -500,6 +501,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pykrx", specifier = ">=1.2.8" },
+    { name = "requests", specifier = ">=2.31" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 

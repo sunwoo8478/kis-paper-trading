@@ -8,25 +8,86 @@ class SimulatedExecutor(OrderExecutor):
         self.provider = provider
         self.conn = conn
 
-    def place_order(self, code: str, side: str, quantity: int) -> OrderResult:
+    def place_order(
+        self, code: str, side: str, quantity: int, order_type: str = "market", limit_price: float | None = None
+    ) -> OrderResult:
         if side not in ("buy", "sell"):
             raise OrderExecutionError(f"invalid side: {side}")
         if quantity <= 0:
             raise OrderExecutionError("quantity must be positive")
+        if order_type not in ("market", "limit"):
+            raise OrderExecutionError(f"invalid order type: {order_type}")
+        if order_type == "limit" and (limit_price is None or limit_price <= 0):
+            raise OrderExecutionError("limit price must be positive")
 
         price = self.provider.get_latest_price(code)
 
+        if order_type == "limit" and not self._is_marketable(side, price, limit_price):
+            self._validate_capacity(code, side, quantity, limit_price)
+            order_id = repository.record_order(
+                self.conn, code, side, quantity, limit_price, status="pending", order_type="limit", limit_price=limit_price
+            )
+            return OrderResult(
+                order_id=order_id, code=code, side=side, quantity=quantity,
+                fill_price=None, status="pending", order_type="limit", limit_price=limit_price,
+            )
+
+        try:
+            self._apply_fill(code, side, quantity, price, commit=False)
+            order_id = repository.record_order(
+                self.conn, code, side, quantity, price,
+                order_type=order_type, limit_price=limit_price, commit=False,
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return OrderResult(
+            order_id=order_id, code=code, side=side, quantity=quantity,
+            fill_price=price, status="filled", order_type=order_type, limit_price=limit_price,
+        )
+
+    def process_pending_orders(self) -> int:
+        filled = 0
+        for order in repository.get_pending_orders(self.conn):
+            try:
+                price = self.provider.get_latest_price(order["code"])
+                if not self._is_marketable(order["side"], price, order["limit_price"]):
+                    continue
+                self._apply_fill(order["code"], order["side"], order["quantity"], price, commit=False)
+                repository.fill_pending_order(self.conn, order["id"], price)
+                filled += 1
+            except (OrderExecutionError, ValueError):
+                continue
+        return filled
+
+    def _validate_capacity(self, code: str, side: str, quantity: int, price: float) -> None:
+        pending_buy_value, pending_sell_quantities = repository.get_pending_commitments(self.conn)
         if side == "buy":
             cash = repository.get_cash_balance(self.conn)
             cost = price * quantity
-            if cost > cash:
+            if cost > cash - pending_buy_value:
                 raise OrderExecutionError("insufficient cash balance")
-            repository.apply_buy(self.conn, code, quantity, price)
+        else:
+            position = repository.get_position(self.conn, code)
+            available = (position.quantity if position else 0) - pending_sell_quantities.get(code, 0)
+            if available < quantity:
+                raise OrderExecutionError("insufficient position quantity")
+
+    def _apply_fill(self, code: str, side: str, quantity: int, price: float, commit: bool = True) -> None:
+        if side == "buy":
+            cash = repository.get_cash_balance(self.conn)
+            if price * quantity > cash:
+                raise OrderExecutionError("insufficient cash balance")
+            repository.apply_buy(self.conn, code, quantity, price, commit=commit)
         else:
             position = repository.get_position(self.conn, code)
             if position is None or position.quantity < quantity:
                 raise OrderExecutionError("insufficient position quantity")
-            repository.apply_sell(self.conn, code, quantity, price)
+            repository.apply_sell(self.conn, code, quantity, price, commit=commit)
 
-        order_id = repository.record_order(self.conn, code, side, quantity, price)
-        return OrderResult(order_id=order_id, code=code, side=side, quantity=quantity, fill_price=price)
+    @staticmethod
+    def _is_marketable(side: str, current_price: float, limit_price: float | None) -> bool:
+        if limit_price is None:
+            return True
+        return current_price <= limit_price if side == "buy" else current_price >= limit_price

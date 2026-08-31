@@ -8,7 +8,10 @@ class OrderResult:
     code: str
     side: str
     quantity: int
-    fill_price: float
+    fill_price: float | None
+    status: str = "filled"
+    order_type: str = "market"
+    limit_price: float | None = None
 
 
 class OrderExecutionError(Exception):
@@ -17,5 +20,7 @@ class OrderExecutionError(Exception):
 
 class OrderExecutor(ABC):
     @abstractmethod
-    def place_order(self, code: str, side: str, quantity: int) -> OrderResult:
+    def place_order(
+        self, code: str, side: str, quantity: int, order_type: str = "market", limit_price: float | None = None
+    ) -> OrderResult:
         ...
