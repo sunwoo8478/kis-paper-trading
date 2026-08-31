@@ -10,6 +10,7 @@ import {
   getAgentCandidates,
   getAgentRuns,
   getAgentStatus,
+  getExperimentStatus,
   getOrders,
   getPortfolioRisk,
   streamCopilot,
@@ -42,11 +43,13 @@ export function AiCopilot() {
   const logRef = useRef<HTMLDivElement>(null);
   const rectRef = useRef<PanelRect | null>(null);
   const restoreRectRef = useRef<PanelRect | null>(null);
+  const experimentIdRef = useRef<number | null>(null);
   const risk = useSWR(open ? "/api/portfolio/risk:copilot" : null, getPortfolioRisk, { refreshInterval: 10000 });
   const candidates = useSWR(open ? "/api/agent/candidates:copilot" : null, getAgentCandidates, { refreshInterval: 15000 });
   const runs = useSWR(open ? "/api/agent/runs:copilot" : null, getAgentRuns, { refreshInterval: 15000 });
   const orders = useSWR(open ? "/api/orders:copilot" : null, getOrders, { refreshInterval: 10000 });
   const status = useSWR(open ? "/api/agent/status:copilot" : null, getAgentStatus, { refreshInterval: 15000 });
+  const experiment = useSWR(open ? "/api/agent/experiment:copilot" : null, getExperimentStatus, { refreshInterval: 10000 });
   const stockCode = pathname.match(/^\/stocks\/(\d{6})/)?.[1] ?? null;
   const scope = stockCode ? `종목 ${stockCode}` : routeLabel(pathname);
 
@@ -86,6 +89,15 @@ export function AiCopilot() {
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [messages, thinking]);
+
+  useEffect(() => {
+    const nextId = experiment.data?.experiment?.id ?? null;
+    if (nextId === null || experimentIdRef.current === nextId) return;
+    experimentIdRef.current = nextId;
+    setMessages([
+      { role: "assistant", content: `새 AI 운용 실험이 시작되었습니다. 실험 #${nextId} 이후의 계좌 데이터만 기준으로 답변합니다.` },
+    ]);
+  }, [experiment.data?.experiment?.id]);
 
   const ask = async (question: string, fallbackAction: CopilotAction) => {
     const history = messages;
@@ -192,7 +204,7 @@ export function AiCopilot() {
         <div className="flex items-center gap-1"><Button variant="ghost" size="icon-sm" onClick={toggleExpanded} aria-label={expanded ? "코파일럿 축소" : "코파일럿 확대"}>{expanded ? <Minimize2 /> : <Maximize2 />}</Button><Button variant="ghost" size="icon-sm" onClick={() => setOpen(false)} aria-label="코파일럿 닫기"><X /></Button></div>
       </header>
 
-      <div className="grid grid-cols-2 border-b border-border bg-muted/20 text-[9px]"><div className="border-r border-border px-3 py-2"><span className="text-muted-foreground">모델 연결</span><p className={cn("mt-0.5 font-medium", status.data?.model_connected ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.model_connected ? `${status.data.provider} / ${status.data.model}` : "연결 대기"}</p></div><div className="px-3 py-2"><span className="text-muted-foreground">자동 주문 권한</span><p className={cn("mt-0.5 font-medium", status.data?.auto_execution_enabled ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.auto_execution_enabled ? "모의 자동운용" : "안전 잠금"}</p></div></div>
+      <div className="grid grid-cols-2 border-b border-border bg-muted/20 text-[9px]"><div className="border-r border-border px-3 py-2"><span className="text-muted-foreground">모델 연결</span><p className={cn("mt-0.5 font-medium", status.data?.model_connected ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.model_connected ? `${status.data.provider} / ${status.data.model}${status.data.context7_connected ? " · Context7" : ""}` : "연결 대기"}</p></div><div className="px-3 py-2"><span className="text-muted-foreground">자동 주문 권한</span><p className={cn("mt-0.5 font-medium", status.data?.auto_execution_enabled ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.auto_execution_enabled ? "모의 자동운용" : "안전 잠금"}</p></div></div>
 
       <div className="grid grid-cols-2 gap-1.5 border-b border-border p-3">
         <QuickAction label="현재 화면 요약" onClick={() => run("screen")} disabled={thinking} /><QuickAction label="포트폴리오 위험" onClick={() => run("risk")} disabled={thinking} /><QuickAction label="시장 후보 스캔" onClick={() => run("market")} disabled={thinking} /><QuickAction label="주문 상태 검토" onClick={() => run("orders")} disabled={thinking} />
@@ -221,7 +233,7 @@ export function AiCopilot() {
       </div>
 
       <form className="border-t border-border p-3" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <div className="flex items-end gap-2 rounded-lg border border-input bg-background p-2 focus-within:ring-2 focus-within:ring-ring/40"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={2} placeholder="위험, 시장 후보, 주문 상태를 질문하세요" className="min-h-10 flex-1 resize-none bg-transparent text-xs leading-5 outline-none placeholder:text-muted-foreground" disabled={thinking} /><Button type="submit" size="icon-sm" disabled={!prompt.trim() || thinking} aria-label="질문 보내기"><CornerDownLeft /></Button></div>
+        <div className="flex items-end gap-2 rounded-lg border border-input bg-background p-2 focus-within:ring-2 focus-within:ring-ring/40"><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={2} placeholder="위험·주문 질문 또는 /docs next.js 질문" className="min-h-10 flex-1 resize-none bg-transparent text-xs leading-5 outline-none placeholder:text-muted-foreground" disabled={thinking} /><Button type="submit" size="icon-sm" disabled={!prompt.trim() || thinking} aria-label="질문 보내기"><CornerDownLeft /></Button></div>
         <button type="button" onClick={() => setOpen(false)} className="mt-2 flex w-full items-center justify-center gap-1 text-[9px] text-muted-foreground hover:text-foreground"><ChevronDown className="h-3 w-3" />작업 공간으로 돌아가기</button>
       </form>
       {!expanded && <>

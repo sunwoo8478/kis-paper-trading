@@ -76,8 +76,57 @@ export type AgentStatus = {
   model: string | null;
   execution_mode: "observe" | "paper_auto";
   auto_execution_enabled: boolean;
+  context7_connected: boolean;
   safety: { max_position_pct: number; max_daily_loss_pct: number; human_approval_required: boolean };
 };
+
+export type AutonomousCycle = {
+  id: number;
+  started_at: string;
+  completed_at: string;
+  status: "disabled" | "market_closed" | "model_unavailable" | "observed" | "executed" | "error";
+  market_open: boolean;
+  decisions: AgentDecision[];
+  order_ids: number[];
+  total_value: number | null;
+  error: string | null;
+};
+
+export type AutonomousStatus = {
+  enabled: boolean;
+  running: boolean;
+  phase: string;
+  execution_mode: "paper";
+  market_open: boolean;
+  interval_seconds: number;
+  updated_at: string;
+  last_cycle_at: string | null;
+  next_cycle_at: string | null;
+  last_error: string | null;
+  latest_cycle: AutonomousCycle | null;
+};
+
+export type PaperExperiment = {
+  id: number;
+  name: string;
+  strategy_version: string;
+  started_at: string;
+  ended_at: string | null;
+  initial_capital: number;
+  benchmark_symbol: string | null;
+  benchmark_start_value: number | null;
+  benchmark_current_value: number | null;
+  benchmark_return_pct: number | null;
+  alpha_pct: number | null;
+  current_value: number;
+  return_pct: number;
+  max_drawdown_pct: number;
+  order_count: number;
+  cycle_count: number;
+  status: "active" | "completed";
+};
+
+export type ExperimentStatus = { active: boolean; experiment: PaperExperiment | null };
 
 export type StockAnalytics = {
   as_of: string | null;
@@ -304,6 +353,26 @@ export async function getAgentRuns(): Promise<AgentRun[]> {
 
 export async function getAgentStatus(): Promise<AgentStatus> {
   return fetcher<AgentStatus>("/api/agent/status");
+}
+
+export async function getAutonomousStatus(): Promise<AutonomousStatus> {
+  return fetcher<AutonomousStatus>("/api/agent/autonomous/status");
+}
+
+export async function getExperimentStatus(): Promise<ExperimentStatus> {
+  return fetcher<ExperimentStatus>("/api/agent/experiment");
+}
+
+export async function startAutonomousTrading(): Promise<AutonomousStatus> {
+  return postJson<AutonomousStatus>("/api/agent/autonomous/start", {});
+}
+
+export async function stopAutonomousTrading(): Promise<AutonomousStatus> {
+  return postJson<AutonomousStatus>("/api/agent/autonomous/stop", {});
+}
+
+export async function runAutonomousCycle(): Promise<{ status: string; order_ids: number[] }> {
+  return postJson("/api/agent/autonomous/run", {});
 }
 
 export type ChatResponse = {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { Bell, ChevronRight, ListOrdered, Radar, ShieldCheck } from "lucide-react";
-import { getAgentCandidates, getAgentRuns, getAgentStatus, getOrders, getPortfolio, getPortfolioHistory, getPortfolioRisk, getPriceAlerts, getWatchlist } from "@/lib/api";
+import { getAgentCandidates, getOrders, getPortfolio, getPortfolioHistory, getPortfolioRisk, getPriceAlerts, getWatchlist } from "@/lib/api";
 import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -22,12 +22,10 @@ export default function DashboardPage() {
   const watchlist = useSWR("/api/watchlist", getWatchlist, { refreshInterval: 10000 });
   const orders = useSWR("/api/orders", getOrders, { refreshInterval: 10000 });
   const candidates = useSWR("/api/agent/candidates", getAgentCandidates, { refreshInterval: 15000 });
-  const runs = useSWR("/api/agent/runs", getAgentRuns, { refreshInterval: 15000 });
-  const agentStatus = useSWR("/api/agent/status", getAgentStatus, { refreshInterval: 15000 });
   const risk = useSWR("/api/portfolio/risk", getPortfolioRisk, { refreshInterval: 10000 });
   const alerts = useSWR("/api/alerts", () => getPriceAlerts(), { refreshInterval: 15000 });
 
-  const refresh = () => { portfolio.mutate(); history.mutate(); watchlist.mutate(); orders.mutate(); candidates.mutate(); runs.mutate(); agentStatus.mutate(); risk.mutate(); alerts.mutate(); };
+  const refresh = () => { portfolio.mutate(); history.mutate(); watchlist.mutate(); orders.mutate(); candidates.mutate(); risk.mutate(); alerts.mutate(); };
   const positions = risk.data?.positions ?? [];
   const ownedCodes = positions.map((position) => position.code);
   const nameByCode = new Map([...(candidates.data ?? []), ...(watchlist.data ?? [])].map((stock) => [stock.code, stock.name]));
@@ -49,7 +47,7 @@ export default function DashboardPage() {
         </header>
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:col-span-9 xl:grid-cols-6">
           <Metric label="총자산" value={formatPrice(portfolio.data?.total_value ?? null)} />
-          <Metric label="현금" value={formatPrice(portfolio.data?.cash ?? null)} />
+          <Metric label="현금 · 단주 잔액" value={formatPrice(portfolio.data?.cash ?? null)} />
           <Metric label="평가손익" value={formatPrice(portfolio.data?.unrealized_pnl ?? null)} tone={changeColorClass(portfolio.data?.unrealized_pnl ?? null)} />
           <Metric label="누적 수익률" value={formatChangePct(risk.data?.total_return_pct ?? null)} tone={changeColorClass(risk.data?.total_return_pct ?? null)} />
           <Metric label="투자 비중" value={risk.data ? `${risk.data.invested_ratio_pct.toFixed(1)}%` : "-"} />
@@ -60,8 +58,8 @@ export default function DashboardPage() {
       <section className="grid border-b border-border xl:h-[330px] xl:grid-cols-12">
         <Card className={`${EMBEDDED_CARD} border-b border-border xl:col-span-7 xl:border-b-0 xl:border-r`}>
           <CardHeader className="flex min-h-14 flex-row items-center justify-between border-b bg-muted/25 px-4 py-3">
-            <div><CardTitle className="text-sm">보유 종목</CardTitle><p className="mt-0.5 text-[9px] text-muted-foreground">실시간 평가손익과 포트폴리오 비중</p></div>
-            <Link href="/risk" className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground">리스크 상세<ChevronRight className="h-3 w-3" /></Link>
+            <div><CardTitle className="text-sm">보유 종목</CardTitle><p className="mt-0.5 text-[9px] text-muted-foreground">전체 {positions.length}종목 · 투자금 {formatPrice(risk.data?.evaluated_value ?? null)}</p></div>
+            <div className="flex items-center gap-3"><span className="font-mono text-[9px] text-emerald-600 dark:text-emerald-400">투자 비중 {risk.data?.invested_ratio_pct.toFixed(2) ?? "-"}%</span><Link href="/risk" className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground">리스크 상세<ChevronRight className="h-3 w-3" /></Link></div>
           </CardHeader>
           <CardContent className="min-h-0 flex-1 overflow-auto p-0">
             <Table>
@@ -90,7 +88,7 @@ export default function DashboardPage() {
           <CardContent className="min-h-0 flex-1 p-4">{chartData.length > 0 ? <EquityChart data={chartData} /> : <EmptyCopy title="기록 없음" text="체결이 쌓이면 자산 곡선이 표시됩니다." />}</CardContent>
         </Card>
         <Operations pendingOrders={pendingOrders} activeAlerts={activeAlerts} riskFlags={risk.data?.risk_flags.length ?? 0} />
-        <AiOperationsPanel candidateCount={candidates.data?.length ?? 0} riskFlags={risk.data?.risk_flags.length ?? 0} latestRunId={runs.data?.[0]?.id ?? null} linkedOrders={runs.data?.[0]?.order_ids.length ?? 0} status={agentStatus.data} />
+        <AiOperationsPanel />
       </section>
 
       <Card className={`${EMBEDDED_CARD} max-h-[310px]`}>

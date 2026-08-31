@@ -7,6 +7,7 @@ import {
   LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type UTCTimestamp,
 } from "lightweight-charts";
 
 export function EquityChart({
@@ -51,12 +52,17 @@ export function EquityChart({
 
   useEffect(() => {
     if (!seriesRef.current) return;
-    seriesRef.current.setData(
-      data.map((point) => ({
-        time: point.time.slice(0, 10),
-        value: point.value,
-      }))
-    );
+    const valuesBySecond = new Map<number, number>();
+    for (const point of data) {
+      const timestamp = Math.floor(new Date(point.time).getTime() / 1000);
+      if (Number.isFinite(timestamp) && Number.isFinite(point.value)) {
+        valuesBySecond.set(timestamp, point.value);
+      }
+    }
+    const chartData = [...valuesBySecond.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([time, value]) => ({ time: time as UTCTimestamp, value }));
+    seriesRef.current.setData(chartData);
   }, [data, isDark]);
 
   return <div ref={containerRef} className="w-full" />;
