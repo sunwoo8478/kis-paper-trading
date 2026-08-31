@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useTheme } from "next-themes";
 import {
   createChart,
   LineSeries,
@@ -15,14 +16,19 @@ export function EquityChart({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const { resolvedTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
 
   useEffect(() => {
     if (!containerRef.current) return;
 
     const chart: IChartApi = createChart(containerRef.current, {
       height: 280,
-      layout: { textColor: "#333", background: { color: "transparent" } },
-      grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+      layout: { textColor: isDark ? "#94a3b8" : "#475569", background: { color: "transparent" } },
+      grid: {
+        vertLines: { color: isDark ? "rgba(148,163,184,0.08)" : "rgba(100,116,139,0.10)" },
+        horzLines: { color: isDark ? "rgba(148,163,184,0.08)" : "rgba(100,116,139,0.10)" },
+      },
     });
     seriesRef.current = chart.addSeries(LineSeries, {
       color: "#2563eb",
@@ -41,7 +47,7 @@ export function EquityChart({
       window.removeEventListener("resize", handleResize);
       chart.remove();
     };
-  }, []);
+  }, [isDark]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
@@ -51,7 +57,7 @@ export function EquityChart({
         value: point.value,
       }))
     );
-  }, [data]);
+  }, [data, isDark]);
 
   return <div ref={containerRef} className="w-full" />;
 }

@@ -1,127 +1,111 @@
 "use client";
 
+import Link from "next/link";
 import useSWR from "swr";
-import { getPortfolio, getPortfolioHistory } from "@/lib/api";
+import { Bell, ChevronRight, ListOrdered, Radar, ShieldCheck } from "lucide-react";
+import { getAgentCandidates, getAgentRuns, getAgentStatus, getOrders, getPortfolio, getPortfolioHistory, getPortfolioRisk, getPriceAlerts, getWatchlist } from "@/lib/api";
+import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { RefreshBadge } from "@/components/refresh-badge";
 import { EquityChart } from "@/components/equity-chart";
+import { AiOperationsPanel } from "@/components/ai-operations-panel";
+import { MarketWorkbench } from "@/components/market-workbench";
+import { MarketNewsPanel } from "@/components/market-news-panel";
 
 const KRW = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 });
+const EMBEDDED_CARD = "h-full min-w-0 gap-0 rounded-none border-0 py-0 shadow-none ring-0";
 
 export default function DashboardPage() {
   const portfolio = useSWR("/api/portfolio", getPortfolio, { refreshInterval: 10000 });
   const history = useSWR("/api/portfolio/history", getPortfolioHistory, { refreshInterval: 10000 });
+  const watchlist = useSWR("/api/watchlist", getWatchlist, { refreshInterval: 10000 });
+  const orders = useSWR("/api/orders", getOrders, { refreshInterval: 10000 });
+  const candidates = useSWR("/api/agent/candidates", getAgentCandidates, { refreshInterval: 15000 });
+  const runs = useSWR("/api/agent/runs", getAgentRuns, { refreshInterval: 15000 });
+  const agentStatus = useSWR("/api/agent/status", getAgentStatus, { refreshInterval: 15000 });
+  const risk = useSWR("/api/portfolio/risk", getPortfolioRisk, { refreshInterval: 10000 });
+  const alerts = useSWR("/api/alerts", () => getPriceAlerts(), { refreshInterval: 15000 });
 
-  const hasError = Boolean(portfolio.error || history.error);
-  const isValidating = portfolio.isValidating || history.isValidating;
-
-  const refresh = () => {
-    portfolio.mutate();
-    history.mutate();
-  };
-
-  const positions = portfolio.data?.positions ?? [];
-  const chartData =
-    history.data?.map((snapshot) => ({ time: snapshot.ts, value: snapshot.total_value })) ?? [];
+  const refresh = () => { portfolio.mutate(); history.mutate(); watchlist.mutate(); orders.mutate(); candidates.mutate(); runs.mutate(); agentStatus.mutate(); risk.mutate(); alerts.mutate(); };
+  const positions = risk.data?.positions ?? [];
+  const ownedCodes = positions.map((position) => position.code);
+  const nameByCode = new Map([...(candidates.data ?? []), ...(watchlist.data ?? [])].map((stock) => [stock.code, stock.name]));
+  const recentOrders = (orders.data ?? []).slice(0, 6);
+  const pendingOrders = (orders.data ?? []).filter((order) => order.status === "pending").length;
+  const activeAlerts = (alerts.data ?? []).filter((alert) => alert.active).length;
+  const chartData = history.data?.map((snapshot) => ({ time: snapshot.ts, value: snapshot.total_value })) ?? [];
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">대시보드</h1>
-        <RefreshBadge hasError={hasError} isValidating={isValidating} onRefresh={refresh} />
-      </div>
+    <div className="w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+      <section className="grid border-b border-border xl:grid-cols-12">
+        <header className="flex min-h-24 items-center justify-between gap-4 border-b border-border px-5 py-4 xl:col-span-3 xl:border-b-0 xl:border-r">
+          <div>
+            <p className="text-[9px] font-medium text-muted-foreground">AI OPERATIONS</p>
+            <h1 className="mt-1 text-xl font-semibold tracking-tight">AI 운용 콘솔</h1>
+            <p className="mt-1 text-[10px] text-muted-foreground">AI가 분석하고 사용자는 권한과 위험을 감독합니다.</p>
+          </div>
+          <RefreshBadge hasError={Boolean(portfolio.error || risk.error)} isValidating={portfolio.isValidating || risk.isValidating} onRefresh={refresh} />
+        </header>
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:col-span-9 xl:grid-cols-6">
+          <Metric label="총자산" value={formatPrice(portfolio.data?.total_value ?? null)} />
+          <Metric label="현금" value={formatPrice(portfolio.data?.cash ?? null)} />
+          <Metric label="평가손익" value={formatPrice(portfolio.data?.unrealized_pnl ?? null)} tone={changeColorClass(portfolio.data?.unrealized_pnl ?? null)} />
+          <Metric label="누적 수익률" value={formatChangePct(risk.data?.total_return_pct ?? null)} tone={changeColorClass(risk.data?.total_return_pct ?? null)} />
+          <Metric label="투자 비중" value={risk.data ? `${risk.data.invested_ratio_pct.toFixed(1)}%` : "-"} />
+          <Metric label="최대 집중도" value={risk.data ? `${risk.data.max_position_weight_pct.toFixed(1)}%` : "-"} />
+        </div>
+      </section>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
-        <SummaryCard label="총자산" value={portfolio.data ? `${KRW.format(portfolio.data.total_value)}원` : "-"} />
-        <SummaryCard label="현금" value={portfolio.data ? `${KRW.format(portfolio.data.cash)}원` : "-"} />
-        <SummaryCard
-          label="평가금액"
-          value={portfolio.data ? `${KRW.format(portfolio.data.evaluated_value)}원` : "-"}
-        />
-        <SummaryCard
-          label="평가손익"
-          value={portfolio.data ? `${KRW.format(portfolio.data.unrealized_pnl)}원` : "-"}
-          highlight={portfolio.data ? portfolio.data.unrealized_pnl >= 0 : undefined}
-        />
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>자산추이</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {chartData.length > 0 ? (
-            <EquityChart data={chartData} />
-          ) : (
-            <p className="text-sm text-muted-foreground">아직 쌓인 자산 이력이 없음</p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>보유종목</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>종목코드</TableHead>
-                <TableHead className="text-right">수량</TableHead>
-                <TableHead className="text-right">평단가</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {positions.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={3} className="text-center text-muted-foreground">
-                    보유종목 없음
-                  </TableCell>
-                </TableRow>
-              )}
-              {positions.map((position) => (
+      <section className="grid border-b border-border xl:h-[330px] xl:grid-cols-12">
+        <Card className={`${EMBEDDED_CARD} border-b border-border xl:col-span-7 xl:border-b-0 xl:border-r`}>
+          <CardHeader className="flex min-h-14 flex-row items-center justify-between border-b bg-muted/25 px-4 py-3">
+            <div><CardTitle className="text-sm">보유 종목</CardTitle><p className="mt-0.5 text-[9px] text-muted-foreground">실시간 평가손익과 포트폴리오 비중</p></div>
+            <Link href="/risk" className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground">리스크 상세<ChevronRight className="h-3 w-3" /></Link>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 overflow-auto p-0">
+            <Table>
+              <TableHeader><TableRow><TableHead>종목</TableHead><TableHead className="text-right">현재가</TableHead><TableHead className="text-right">평가금액</TableHead><TableHead className="text-right">평가손익</TableHead><TableHead className="text-right">수익률</TableHead><TableHead className="text-right">비중</TableHead></TableRow></TableHeader>
+              <TableBody>{positions.length === 0 ? <TableRow><TableCell colSpan={6} className="h-28 text-center text-muted-foreground">보유 종목이 없습니다.</TableCell></TableRow> : positions.map((position) => (
                 <TableRow key={position.code}>
-                  <TableCell>{position.code}</TableCell>
-                  <TableCell className="text-right">{position.quantity}</TableCell>
-                  <TableCell className="text-right">{KRW.format(position.avg_price)}원</TableCell>
+                  <TableCell><Link href={`/stocks/${position.code}`} className="text-xs font-medium hover:underline">{nameByCode.get(position.code) ?? position.code}</Link><p className="mt-0.5 font-mono text-[9px] text-muted-foreground">{position.code} / {position.quantity}주</p></TableCell>
+                  <TableCell className="text-right font-mono text-xs">{formatPrice(position.current_price)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{formatPrice(position.market_value)}</TableCell>
+                  <TableCell className={`text-right font-mono text-xs ${changeColorClass(position.unrealized_pnl)}`}>{formatPrice(position.unrealized_pnl)}</TableCell>
+                  <TableCell className={`text-right font-mono text-xs ${changeColorClass(position.return_pct)}`}>{formatChangePct(position.return_pct)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{position.weight_pct.toFixed(1)}%</TableCell>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
+              ))}</TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+        <div className="min-h-0 min-w-0 xl:col-span-5"><MarketNewsPanel codes={ownedCodes} compact className="h-full rounded-none border-0 shadow-none" /></div>
+      </section>
+
+      <MarketWorkbench className="rounded-none border-0 border-b border-border shadow-none" />
+
+      <section className="grid border-b border-border xl:h-[330px] xl:grid-cols-12">
+        <Card className={`${EMBEDDED_CARD} border-b border-border xl:col-span-6 xl:border-b-0 xl:border-r`}>
+          <CardHeader className="min-h-14 border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">자산 곡선</CardTitle></CardHeader>
+          <CardContent className="min-h-0 flex-1 p-4">{chartData.length > 0 ? <EquityChart data={chartData} /> : <EmptyCopy title="기록 없음" text="체결이 쌓이면 자산 곡선이 표시됩니다." />}</CardContent>
+        </Card>
+        <Operations pendingOrders={pendingOrders} activeAlerts={activeAlerts} riskFlags={risk.data?.risk_flags.length ?? 0} />
+        <AiOperationsPanel candidateCount={candidates.data?.length ?? 0} riskFlags={risk.data?.risk_flags.length ?? 0} latestRunId={runs.data?.[0]?.id ?? null} linkedOrders={runs.data?.[0]?.order_ids.length ?? 0} status={agentStatus.data} />
+      </section>
+
+      <Card className={`${EMBEDDED_CARD} max-h-[310px]`}>
+        <CardHeader className="flex min-h-14 flex-row items-center justify-between border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">최근 주문</CardTitle><Link href="/orders" className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground">전체 주문<ChevronRight className="h-3 w-3" /></Link></CardHeader>
+        <CardContent className="overflow-auto p-0"><Table><TableHeader><TableRow><TableHead>상태</TableHead><TableHead>구분</TableHead><TableHead>종목</TableHead><TableHead>유형</TableHead><TableHead className="text-right">수량</TableHead><TableHead className="text-right">가격</TableHead><TableHead className="text-right">시간</TableHead></TableRow></TableHeader><TableBody>{recentOrders.length === 0 ? <TableRow><TableCell colSpan={7} className="h-24 text-center text-muted-foreground">주문 기록이 없습니다.</TableCell></TableRow> : recentOrders.map((order) => <TableRow key={order.id}><TableCell className="text-xs text-muted-foreground">{order.status === "pending" ? "대기" : order.status === "filled" ? "체결" : "취소"}</TableCell><TableCell className={order.side === "buy" ? "text-red-500" : "text-blue-500"}>{order.side === "buy" ? "매수" : "매도"}</TableCell><TableCell className="font-mono font-medium">{order.code}</TableCell><TableCell className="text-muted-foreground">{order.order_type === "limit" ? "지정가" : "시장가"}</TableCell><TableCell className="text-right font-mono">{order.quantity}</TableCell><TableCell className="text-right font-mono">{KRW.format(order.price)}원</TableCell><TableCell className="text-right text-xs text-muted-foreground">{new Date(order.filled_at).toLocaleString("ko-KR")}</TableCell></TableRow>)}</TableBody></Table></CardContent>
       </Card>
     </div>
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  highlight,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-normal text-muted-foreground">{label}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p
-          className={
-            highlight === undefined
-              ? "text-lg font-semibold"
-              : highlight
-                ? "text-lg font-semibold text-red-600"
-                : "text-lg font-semibold text-blue-600"
-          }
-        >
-          {value}
-        </p>
-      </CardContent>
-    </Card>
-  );
+function Metric({ label, value, tone }: { label: string; value: string; tone?: string }) { return <div className="flex min-h-24 flex-col justify-center border-b border-r border-border px-4 last:border-r-0 sm:[&:nth-last-child(-n+3)]:border-b-0 xl:border-b-0"><p className="text-[9px] text-muted-foreground">{label}</p><p className={`mt-1.5 font-mono text-sm font-medium ${tone ?? "text-foreground"}`}>{value}</p></div>; }
+
+function Operations({ pendingOrders, activeAlerts, riskFlags }: { pendingOrders: number; activeAlerts: number; riskFlags: number }) {
+  const links = [{ href: "/orders", icon: ListOrdered, label: "대기 주문", value: `${pendingOrders}건` }, { href: "/alerts", icon: Bell, label: "활성 알림", value: `${activeAlerts}건` }, { href: "/risk", icon: ShieldCheck, label: "리스크 신호", value: `${riskFlags}건` }, { href: "/screener", icon: Radar, label: "시장 스크리너", value: "열기" }];
+  return <section className="border-b border-border bg-card xl:col-span-3 xl:border-b-0 xl:border-r"><header className="min-h-14 border-b border-border bg-muted/25 px-4 py-3"><h2 className="text-sm font-semibold">운영 센터</h2><p className="text-[9px] text-muted-foreground">주문과 위험 신호</p></header><div className="grid grid-cols-2">{links.map((item) => <Link key={item.href} href={item.href} className="flex min-h-[108px] flex-col justify-between border-b border-r border-border p-3 transition even:border-r-0 [&:nth-last-child(-n+2)]:border-b-0 hover:bg-muted/40"><item.icon className="h-3.5 w-3.5 text-muted-foreground" /><span><span className="block text-[9px] text-muted-foreground">{item.label}</span><span className="mt-1 block font-mono text-xs font-medium">{item.value}</span></span></Link>)}</div></section>;
 }
+
+function EmptyCopy({ title, text }: { title: string; text: string }) { return <div className="flex h-full flex-col items-center justify-center text-center"><p className="text-xs font-medium">{title}</p><p className="mt-1 text-[10px] text-muted-foreground">{text}</p></div>; }
