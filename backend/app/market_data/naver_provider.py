@@ -25,13 +25,21 @@ class NaverRealtimeProvider(MarketDataProvider):
         return self._pykrx.get_ohlcv(code, start, end)
 
     def get_latest_price(self, code: str) -> float:
+        item = self._get_realtime_item(code)
+        close_price = item.get("closePrice")
+        if not close_price:
+            raise ValueError(f"no price data available for {code}")
+        return float(close_price.replace(",", ""))
+
+    def get_market_status(self, code: str = "005930") -> str | None:
+        return self._get_realtime_item(code).get("marketStatus")
+
+    @staticmethod
+    def _get_realtime_item(code: str) -> dict:
         response = requests.get(_QUOTE_URL.format(code=code), headers=_HEADERS, timeout=5)
         response.raise_for_status()
         payload = response.json()
         datas = payload.get("datas") or []
         if not datas:
             raise ValueError(f"no price data available for {code}")
-        close_price = datas[0].get("closePrice")
-        if not close_price:
-            raise ValueError(f"no price data available for {code}")
-        return float(close_price.replace(",", ""))
+        return datas[0]

@@ -1,5 +1,6 @@
+import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import portfolio
 
@@ -46,7 +47,10 @@ CREATE TABLE IF NOT EXISTS orders (
     filled_at TEXT NOT NULL,
     status TEXT NOT NULL,
     order_type TEXT NOT NULL DEFAULT 'market',
-    limit_price REAL
+    limit_price REAL,
+    requested_quantity INTEGER,
+    filled_quantity INTEGER NOT NULL DEFAULT 0,
+    fill_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
@@ -65,6 +69,46 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     decisions TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     order_ids TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_control (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_lease (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    owner TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS autonomous_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    market_open INTEGER NOT NULL,
+    decisions TEXT NOT NULL,
+    order_ids TEXT NOT NULL,
+    total_value REAL,
+    error TEXT,
+    market_regime TEXT,
+    target_exposure_pct REAL,
+    blocked_decisions TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS paper_experiments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    strategy_version TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    initial_capital REAL NOT NULL,
+    benchmark_symbol TEXT,
+    benchmark_start_value REAL,
+    previous_state TEXT NOT NULL,
+    status TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS price_alerts (
@@ -92,6 +136,31 @@ def init_db(conn: sqlite3.Connection, initial_capital: float = 10_000_000.0) -> 
     conn.executescript(SCHEMA)
     _ensure_column(conn, "orders", "order_type", "TEXT NOT NULL DEFAULT 'market'")
     _ensure_column(conn, "orders", "limit_price", "REAL")
+    _ensure_column(conn, "orders", "requested_quantity", "INTEGER")
+    _ensure_column(conn, "orders", "filled_quantity", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "orders", "fill_reason", "TEXT")
+    conn.execute(
+        """
+        UPDATE orders
+        SET requested_quantity = COALESCE(requested_quantity, quantity),
+            filled_quantity = CASE
+                WHEN filled_quantity = 0 AND status = 'filled' THEN quantity
+                ELSE filled_quantity
+            END
+        WHERE requested_quantity IS NULL
+           OR (filled_quantity = 0 AND status = 'filled')
+        """
+    )
+    _ensure_column(conn, "paper_experiments", "benchmark_symbol", "TEXT")
+    _ensure_column(conn, "paper_experiments", "benchmark_start_value", "REAL")
+    _ensure_column(conn, "autonomous_cycles", "market_regime", "TEXT")
+    _ensure_column(conn, "autonomous_cycles", "target_exposure_pct", "REAL")
+    _ensure_column(
+        conn,
+        "autonomous_cycles",
+        "blocked_decisions",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
     conn.execute(
         "INSERT OR IGNORE INTO account (id, cash_balance, initial_capital) VALUES (1, ?, ?)",
         (initial_capital, initial_capital),
@@ -113,6 +182,149 @@ def get_cash_balance(conn: sqlite3.Connection) -> float:
 def get_initial_capital(conn: sqlite3.Connection) -> float:
     row = conn.execute("SELECT initial_capital FROM account WHERE id = 1").fetchone()
     return row[0]
+
+
+def start_paper_experiment(
+    conn: sqlite3.Connection,
+    name: str,
+    initial_capital: float,
+    strategy_version: str,
+    benchmark_symbol: str | None = None,
+    benchmark_start_value: float | None = None,
+) -> dict:
+    if initial_capital <= 0:
+        raise ValueError("initial capital must be positive")
+    started_at = datetime.now(timezone.utc).isoformat()
+    previous_state = json.dumps(
+        {
+            "cash": get_cash_balance(conn),
+            "initial_capital": get_initial_capital(conn),
+            "positions": [
+                {"code": item.code, "quantity": item.quantity, "avg_price": item.avg_price}
+                for item in get_all_positions(conn)
+            ],
+            "latest_order_id": conn.execute("SELECT MAX(id) FROM orders").fetchone()[0],
+            "latest_snapshot_id": conn.execute("SELECT MAX(id) FROM portfolio_snapshots").fetchone()[0],
+        },
+        ensure_ascii=False,
+    )
+    conn.execute(
+        "UPDATE paper_experiments SET status = 'completed', ended_at = ? WHERE status = 'active'",
+        (started_at,),
+    )
+    cursor = conn.execute(
+        """
+        INSERT INTO paper_experiments
+        (name, strategy_version, started_at, initial_capital, benchmark_symbol,
+         benchmark_start_value, previous_state, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+        """,
+        (
+            name, strategy_version, started_at, initial_capital, benchmark_symbol,
+            benchmark_start_value, previous_state,
+        ),
+    )
+    conn.execute("DELETE FROM positions")
+    conn.execute("UPDATE orders SET status = 'cancelled' WHERE status = 'pending'")
+    conn.execute(
+        "UPDATE account SET cash_balance = ?, initial_capital = ? WHERE id = 1",
+        (initial_capital, initial_capital),
+    )
+    conn.execute(
+        "INSERT INTO portfolio_snapshots (ts, total_value, cash, evaluated_value, pnl) VALUES (?, ?, ?, 0, 0)",
+        (started_at, initial_capital, initial_capital),
+    )
+    conn.commit()
+    return get_active_experiment(conn)
+
+
+def get_active_experiment(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT id, name, strategy_version, started_at, ended_at, initial_capital,
+               benchmark_symbol, benchmark_start_value, status
+        FROM paper_experiments WHERE status = 'active' ORDER BY id DESC LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0], "name": row[1], "strategy_version": row[2],
+        "started_at": row[3], "ended_at": row[4], "initial_capital": row[5],
+        "benchmark_symbol": row[6], "benchmark_start_value": row[7], "status": row[8],
+    }
+
+
+def get_experiment_performance(
+    conn: sqlite3.Connection,
+    current_total: float,
+    current_benchmark_value: float | None = None,
+) -> dict | None:
+    experiment = get_active_experiment(conn)
+    if experiment is None:
+        return None
+    initial = float(experiment["initial_capital"])
+    snapshots = conn.execute(
+        "SELECT ts, total_value FROM portfolio_snapshots WHERE ts >= ? ORDER BY ts",
+        (experiment["started_at"],),
+    ).fetchall()
+    values = [initial] + [float(row[1]) for row in snapshots] + [float(current_total)]
+    peak = 0.0
+    max_drawdown = 0.0
+    for value in values:
+        peak = max(peak, value)
+        if peak:
+            max_drawdown = min(max_drawdown, (value - peak) / peak * 100)
+    order_count = conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE filled_at >= ? AND status = 'filled'",
+        (experiment["started_at"],),
+    ).fetchone()[0]
+    cycle_count = conn.execute(
+        "SELECT COUNT(*) FROM autonomous_cycles WHERE started_at >= ?",
+        (experiment["started_at"],),
+    ).fetchone()[0]
+    benchmark_start = experiment.get("benchmark_start_value")
+    benchmark_return = (
+        (current_benchmark_value - benchmark_start) / benchmark_start * 100
+        if current_benchmark_value is not None and benchmark_start
+        else None
+    )
+    strategy_return = (current_total - initial) / initial * 100 if initial else 0
+    return {
+        **experiment,
+        "current_value": current_total,
+        "return_pct": strategy_return,
+        "benchmark_current_value": current_benchmark_value,
+        "benchmark_return_pct": benchmark_return,
+        "alpha_pct": strategy_return - benchmark_return if benchmark_return is not None else None,
+        "max_drawdown_pct": max_drawdown,
+        "order_count": order_count,
+        "cycle_count": cycle_count,
+    }
+
+
+def acquire_autonomous_lease(conn: sqlite3.Connection, owner: str, ttl_seconds: int) -> bool:
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(seconds=max(30, ttl_seconds))).isoformat()
+    conn.execute("BEGIN IMMEDIATE")
+    row = conn.execute("SELECT owner, expires_at FROM autonomous_lease WHERE id = 1").fetchone()
+    if row is not None and row[0] != owner and datetime.fromisoformat(row[1]) > now:
+        conn.rollback()
+        return False
+    conn.execute(
+        """
+        INSERT INTO autonomous_lease (id, owner, expires_at) VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at
+        """,
+        (owner, expires_at),
+    )
+    conn.commit()
+    return True
+
+
+def release_autonomous_lease(conn: sqlite3.Connection, owner: str) -> None:
+    conn.execute("DELETE FROM autonomous_lease WHERE id = 1 AND owner = ?", (owner,))
+    conn.commit()
 
 
 def get_position(conn: sqlite3.Connection, code: str) -> portfolio.Position | None:
@@ -176,26 +388,56 @@ def record_order(
     order_type: str = "market",
     limit_price: float | None = None,
     commit: bool = True,
+    requested_quantity: int | None = None,
+    filled_quantity: int | None = None,
+    fill_reason: str | None = None,
 ) -> int:
     filled_at = datetime.now(timezone.utc).isoformat()
+    requested_quantity = quantity if requested_quantity is None else requested_quantity
+    if filled_quantity is None:
+        filled_quantity = quantity if status == "filled" else 0
     cursor = conn.execute(
-        "INSERT INTO orders (code, side, quantity, price, filled_at, status, order_type, limit_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (code, side, quantity, price, filled_at, status, order_type, limit_price),
+        """
+        INSERT INTO orders
+            (code, side, quantity, price, filled_at, status, order_type, limit_price,
+             requested_quantity, filled_quantity, fill_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            code, side, quantity, price, filled_at, status, order_type, limit_price,
+            requested_quantity, filled_quantity, fill_reason,
+        ),
     )
     if commit:
         conn.commit()
     return cursor.lastrowid
 
 
-def get_orders(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT id, code, side, quantity, price, filled_at, status, order_type, limit_price FROM orders ORDER BY id DESC"
-    ).fetchall()
+def get_orders(conn: sqlite3.Connection, since: str | None = None) -> list[dict]:
+    if since is None:
+        rows = conn.execute(
+            """
+            SELECT id, code, side, quantity, price, filled_at, status, order_type,
+                   limit_price, requested_quantity, filled_quantity, fill_reason
+            FROM orders ORDER BY id DESC
+            """
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT id, code, side, quantity, price, filled_at, status, order_type,
+                   limit_price, requested_quantity, filled_quantity, fill_reason
+            FROM orders WHERE filled_at >= ? ORDER BY id DESC
+            """,
+            (since,),
+        ).fetchall()
     return [
         {
             "id": r[0], "code": r[1], "side": r[2], "quantity": r[3],
             "price": r[4], "filled_at": r[5], "status": r[6],
             "order_type": r[7], "limit_price": r[8],
+            "requested_quantity": r[9] if r[9] is not None else r[3],
+            "filled_quantity": r[10], "fill_reason": r[11],
         }
         for r in rows
     ]
@@ -205,11 +447,22 @@ def get_pending_orders(conn: sqlite3.Connection) -> list[dict]:
     return [order for order in get_orders(conn) if order["status"] == "pending"]
 
 
-def fill_pending_order(conn: sqlite3.Connection, order_id: int, price: float) -> None:
+def fill_pending_order(
+    conn: sqlite3.Connection,
+    order_id: int,
+    price: float,
+    filled_quantity: int,
+    status: str = "filled",
+    fill_reason: str | None = None,
+) -> None:
     filled_at = datetime.now(timezone.utc).isoformat()
     cursor = conn.execute(
-        "UPDATE orders SET price = ?, filled_at = ?, status = 'filled' WHERE id = ? AND status = 'pending'",
-        (price, filled_at, order_id),
+        """
+        UPDATE orders
+        SET price = ?, filled_at = ?, status = ?, filled_quantity = ?, fill_reason = ?
+        WHERE id = ? AND status = 'pending'
+        """,
+        (price, filled_at, status, filled_quantity, fill_reason, order_id),
     )
     if cursor.rowcount != 1:
         conn.rollback()
@@ -236,6 +489,21 @@ def get_pending_commitments(conn: sqlite3.Connection) -> tuple[float, dict[str, 
         if side == "sell":
             sell_quantities[code] = sell_quantities.get(code, 0) + quantity
     return buy_value, sell_quantities
+
+
+def get_average_volume(conn: sqlite3.Connection, code: str, days: int = 20) -> float | None:
+    row = conn.execute(
+        """
+        SELECT AVG(volume)
+        FROM (
+            SELECT volume FROM price_history
+            WHERE code = ? AND volume > 0
+            ORDER BY date DESC LIMIT ?
+        )
+        """,
+        (code, max(1, days)),
+    ).fetchone()
+    return float(row[0]) if row and row[0] is not None else None
 
 
 def create_price_alert(conn: sqlite3.Connection, code: str, direction: str, target_price: float) -> int:
@@ -342,10 +610,16 @@ def insert_snapshot(
     conn.commit()
 
 
-def get_snapshots(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT ts, total_value, cash, evaluated_value, pnl FROM portfolio_snapshots ORDER BY ts"
-    ).fetchall()
+def get_snapshots(conn: sqlite3.Connection, since: str | None = None) -> list[dict]:
+    if since is None:
+        rows = conn.execute(
+            "SELECT ts, total_value, cash, evaluated_value, pnl FROM portfolio_snapshots ORDER BY ts"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT ts, total_value, cash, evaluated_value, pnl FROM portfolio_snapshots WHERE ts >= ? ORDER BY ts",
+            (since,),
+        ).fetchall()
     return [
         {"ts": r[0], "total_value": r[1], "cash": r[2], "evaluated_value": r[3], "pnl": r[4]}
         for r in rows
@@ -401,6 +675,29 @@ def search_stocks(conn: sqlite3.Connection, query: str) -> list[dict]:
         (like, like),
     ).fetchall()
     return [_quote_row_to_dict(row) for row in rows]
+
+
+def find_stocks_in_text(conn: sqlite3.Connection, text: str, limit: int = 5) -> list[dict]:
+    normalized_text = "".join(text.lower().split())
+    rows = conn.execute("SELECT code, name, market FROM stocks").fetchall()
+    matches = [
+        {"code": row[0], "name": row[1], "market": row[2]}
+        for row in rows
+        if row[0].lower() in normalized_text
+        or (
+            len("".join(row[1].split())) >= 2
+            and "".join(row[1].lower().split()) in normalized_text
+        )
+    ]
+    matches.sort(key=lambda stock: (-len("".join(stock["name"].split())), stock["code"]))
+    return matches[:limit]
+
+
+def get_stock(conn: sqlite3.Connection, code: str) -> dict | None:
+    row = conn.execute("SELECT code, name, market FROM stocks WHERE code = ?", (code,)).fetchone()
+    if row is None:
+        return None
+    return {"code": row[0], "name": row[1], "market": row[2]}
 
 
 def upsert_price_history(conn: sqlite3.Connection, code: str, bars: list) -> None:
@@ -528,10 +825,16 @@ def insert_agent_run(
     return cursor.lastrowid
 
 
-def get_agent_runs(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT id, ts, candidates, decisions, reasoning, order_ids FROM agent_runs ORDER BY id DESC"
-    ).fetchall()
+def get_agent_runs(conn: sqlite3.Connection, since: str | None = None) -> list[dict]:
+    if since is None:
+        rows = conn.execute(
+            "SELECT id, ts, candidates, decisions, reasoning, order_ids FROM agent_runs ORDER BY id DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, ts, candidates, decisions, reasoning, order_ids FROM agent_runs WHERE ts >= ? ORDER BY id DESC",
+            (since,),
+        ).fetchall()
     return [
         {
             "id": r[0],
@@ -542,4 +845,98 @@ def get_agent_runs(conn: sqlite3.Connection) -> list[dict]:
             "order_ids": r[5],
         }
         for r in rows
+    ]
+
+
+def ensure_autonomous_control(conn: sqlite3.Connection, enabled: bool = False) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR IGNORE INTO autonomous_control (id, enabled, updated_at) VALUES (1, ?, ?)",
+        (int(enabled), now),
+    )
+    conn.commit()
+
+
+def set_autonomous_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+    ensure_autonomous_control(conn)
+    conn.execute(
+        "UPDATE autonomous_control SET enabled = ?, updated_at = ? WHERE id = 1",
+        (int(enabled), datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_autonomous_control(conn: sqlite3.Connection) -> dict:
+    ensure_autonomous_control(conn)
+    row = conn.execute(
+        "SELECT enabled, updated_at FROM autonomous_control WHERE id = 1"
+    ).fetchone()
+    return {"enabled": bool(row[0]), "updated_at": row[1]}
+
+
+def insert_autonomous_cycle(
+    conn: sqlite3.Connection,
+    *,
+    started_at: str,
+    status: str,
+    market_open: bool,
+    decisions: str,
+    order_ids: str,
+    total_value: float | None,
+    error: str | None = None,
+    market_regime: str | None = None,
+    target_exposure_pct: float | None = None,
+    blocked_decisions: str = "[]",
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO autonomous_cycles
+            (started_at, completed_at, status, market_open, decisions, order_ids,
+             total_value, error, market_regime, target_exposure_pct, blocked_decisions)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            started_at,
+            datetime.now(timezone.utc).isoformat(),
+            status,
+            int(market_open),
+            decisions,
+            order_ids,
+            total_value,
+            error,
+            market_regime,
+            target_exposure_pct,
+            blocked_decisions,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_autonomous_cycles(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, started_at, completed_at, status, market_open, decisions,
+               order_ids, total_value, error, market_regime, target_exposure_pct,
+               blocked_decisions
+        FROM autonomous_cycles ORDER BY id DESC LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "started_at": row[1],
+            "completed_at": row[2],
+            "status": row[3],
+            "market_open": bool(row[4]),
+            "decisions": json.loads(row[5]),
+            "order_ids": json.loads(row[6]),
+            "total_value": row[7],
+            "error": row[8],
+            "market_regime": row[9],
+            "target_exposure_pct": row[10],
+            "blocked_decisions": json.loads(row[11] or "[]"),
+        }
+        for row in rows
     ]

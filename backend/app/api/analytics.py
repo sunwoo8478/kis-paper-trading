@@ -51,7 +51,8 @@ def build_portfolio_risk(conn, provider) -> dict:
 
     weights = [item["weight_pct"] / 100 for item in enriched]
     max_weight = max((item["weight_pct"] for item in enriched), default=0)
-    snapshots = repository.get_snapshots(conn)
+    experiment = repository.get_active_experiment(conn)
+    snapshots = repository.get_snapshots(conn, experiment["started_at"] if experiment else None)
     values_for_drawdown = [float(item["total_value"]) for item in snapshots] + [total_value]
     peak = 0.0
     max_drawdown = 0.0

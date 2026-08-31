@@ -2,7 +2,11 @@ import json
 
 from fastapi.testclient import TestClient
 
+from app import repository
+from app.ai.context7 import Context7Context
 from app.main import app
+from app.market_data.base import Stock
+from app.market_data.pykrx_provider import PykrxProvider
 
 
 def test_agent_status_is_locked_without_model(tmp_path, monkeypatch):
@@ -33,7 +37,47 @@ def test_agent_status_exposes_configured_paper_auto_mode(tmp_path, monkeypatch):
     assert body["model_connected"] is True
     assert body["execution_mode"] == "paper_auto"
     assert body["safety"]["max_position_pct"] == 12.5
-from app.market_data.pykrx_provider import PykrxProvider
+
+
+def test_autonomous_control_endpoints_persist_start_and_stop(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("AI_AUTONOMOUS_ENABLED", "false")
+
+    with TestClient(app) as client:
+        initial = client.get("/agent/autonomous/status")
+        started = client.post("/agent/autonomous/start")
+        stopped = client.post("/agent/autonomous/stop")
+
+    assert initial.status_code == 200
+    assert initial.json()["enabled"] is False
+    assert started.json()["enabled"] is True
+    assert stopped.json()["enabled"] is False
+
+
+def test_start_experiment_requires_confirmation_and_resets_without_deleting_history(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "experiment.db"))
+    monkeypatch.setenv("AI_AUTONOMOUS_ENABLED", "false")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+    monkeypatch.setattr("app.api.agent._benchmark_quote", lambda: ("KOSPI", 3000.0))
+
+    with TestClient(app) as client:
+        repository.apply_buy(app.state.conn, "005930", 10, 1000.0)
+        repository.record_order(app.state.conn, "005930", "buy", 10, 1000.0)
+        rejected = client.post("/agent/experiment/start", json={"confirm_reset": False})
+        started = client.post(
+            "/agent/experiment/start",
+            json={"name": "AI 전용", "initial_capital": 10_000_000, "confirm_reset": True},
+        )
+        status = client.get("/agent/experiment")
+
+    assert rejected.status_code == 400
+    assert started.status_code == 200
+    assert started.json()["experiment"]["name"] == "AI 전용"
+    assert status.json()["active"] is True
+    assert status.json()["experiment"]["return_pct"] == 0
+    assert status.json()["experiment"]["order_count"] == 0
+    assert status.json()["experiment"]["benchmark_symbol"] == "KOSPI"
+    assert status.json()["experiment"]["benchmark_return_pct"] == 0
 
 
 def test_get_candidates_empty_when_no_price_data(tmp_path, monkeypatch):
@@ -81,6 +125,153 @@ def test_agent_chat_returns_answer_without_executing_when_auto_disabled(tmp_path
 
         runs = client.get("/agent/runs").json()
         assert runs[0]["reasoning"] == body["answer"]
+
+
+def test_agent_chat_answers_portfolio_facts_without_model_guessing(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "facts.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+    monkeypatch.setattr(
+        "app.api.agent.ask_local_model",
+        lambda *args: (_ for _ in ()).throw(AssertionError("facts must bypass model")),
+    )
+
+    with TestClient(app) as client:
+        repository.upsert_stocks(app.state.conn, [Stock("005930", "삼성전자", "KOSPI")])
+        repository.apply_buy(app.state.conn, "005930", 10, 900.0)
+        response = client.post("/agent/chat", json={"prompt": "현재 계좌 상황을 요약해줘"})
+
+    assert response.status_code == 200
+    assert "삼성전자(005930)" in response.json()["answer"]
+    assert "보유 종목은 1개" in response.json()["answer"]
+    assert response.json()["decisions"] == []
+
+
+def test_agent_chat_answers_recent_orders_from_database(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "orders-facts.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+
+    with TestClient(app) as client:
+        order_id = repository.record_order(app.state.conn, "005930", "buy", 3, 1000.0)
+        response = client.post("/agent/chat", json={"prompt": "최근 주문 상태를 검토해줘"})
+
+    assert response.status_code == 200
+    assert f"#{order_id}" in response.json()["answer"]
+    assert "BUY 3주" in response.json()["answer"]
+
+
+def test_agent_chat_answers_buy_reason_from_recorded_autonomous_decision(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "reason-facts.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+
+    with TestClient(app) as client:
+        repository.upsert_stocks(app.state.conn, [Stock("005930", "삼성전자", "KOSPI")])
+        repository.insert_agent_run(
+            app.state.conn,
+            candidates='["005930"]',
+            decisions='[{"code":"005930","action":"buy","reason":"거래량과 추세 확인"}]',
+            reasoning="test",
+            order_ids="[1]",
+        )
+        response = client.post("/agent/chat", json={"prompt": "삼성전자 왜 샀어?"})
+
+    assert response.status_code == 200
+    assert "거래량과 추세 확인" in response.json()["answer"]
+
+
+def test_agent_chat_injects_context7_docs_into_local_model_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+    monkeypatch.setattr(
+        "app.api.agent.get_context_for_prompt",
+        lambda prompt: Context7Context("/vercel/next.js", "Next.js", "CURRENT DOCUMENTATION"),
+    )
+    captured = {}
+
+    def fake_model(system_prompt, user_prompt):
+        captured["prompt"] = user_prompt
+        return '문서를 확인했습니다.\n```json\n{"decisions": []}\n```'
+
+    monkeypatch.setattr("app.api.agent.ask_local_model", fake_model)
+
+    with TestClient(app) as client:
+        response = client.post("/agent/chat", json={"prompt": "/docs next.js app router"})
+
+    assert response.status_code == 200
+    assert "CURRENT DOCUMENTATION" in captured["prompt"]
+    assert "<context7_docs>" in captured["prompt"]
+
+
+def test_agent_chat_returns_server_quote_without_model_guessing(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 251750.0)
+    monkeypatch.setattr(
+        "app.api.agent.ask_local_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("model must not guess a live quote")),
+    )
+
+    with TestClient(app) as client:
+        repository.upsert_stocks(app.state.conn, [Stock("005930", "삼성전자", "KOSPI")])
+        response = client.post("/agent/chat", json={"prompt": "삼성 전자 현재 1주 가격 알려줘"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "251,750원" in body["answer"]
+    assert "삼성전자(005930)" in body["answer"]
+    assert body["decisions"] == []
+
+
+def test_agent_chat_stream_returns_server_quote_without_json_fence(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 251750.0)
+    monkeypatch.setattr(
+        "app.api.agent.stream_local_model",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("model must not guess a live quote")),
+    )
+
+    with TestClient(app) as client:
+        repository.upsert_stocks(app.state.conn, [Stock("005930", "삼성전자", "KOSPI")])
+        with client.stream(
+            "POST", "/agent/chat/stream", json={"prompt": "삼성전자 현재 주가 정보 알려줘"}
+        ) as response:
+            body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "251,750원" in body
+    assert "```json" not in body
+    assert "<<<COPILOT_META>>>" in body
+
+
+def test_agent_chat_stream_hides_model_decision_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+    monkeypatch.setattr(
+        "app.api.agent.stream_local_model",
+        lambda system_prompt, user_prompt: iter(
+            ["분석 결과", "입니다.\n``", "`json\n", '{"decisions": []}', "\n```"]
+        ),
+    )
+
+    with TestClient(app) as client:
+        with client.stream("POST", "/agent/chat/stream", json={"prompt": "시장 분석"}) as response:
+            body = "".join(response.iter_text())
+
+    assert "분석 결과입니다." in body
+    assert "```json" not in body
+    assert '"decisions"' not in body.split("<<<COPILOT_META>>>")[0]
 
 
 def test_agent_chat_executes_and_blocks_by_position_limit(tmp_path, monkeypatch):

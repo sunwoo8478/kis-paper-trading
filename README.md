@@ -1,6 +1,6 @@
 # 국내주식 모의투자 대시보드 (KIS Paper Trading)
 
-한국투자증권 Open API(`koreainvestment/open-trading-api`)를 활용할 예정인 KOSPI/KOSDAQ 모의투자 웹앱. 실제 주식창처럼 보유종목·손익·자산추이·현재가/등락률을 보여주고, 매수/매도 시뮬레이션이 가능하다.
+한국투자증권 Open API(`koreainvestment/open-trading-api`) 연동 전에 전략을 검증하는 KOSPI/KOSDAQ 자율 모의투자 웹앱. 시세 감시부터 AI 판단, 위험 제한, 모의 체결, 성과 기록까지 자동으로 반복한다.
 
 ## 구조
 
@@ -10,12 +10,14 @@ frontend/   Next.js + shadcn/ui (worktree-frontend-dashboard 브랜치, 아직 m
 docs/       설계 스펙 및 구현 계획 문서
 ```
 
-## 현재 단계 (Stage 1)
+## 현재 단계: 24시간 자율 모의운용
 
 한국투자증권 계좌가 아직 없어서, 계좌 준비 전까지는 무료 데이터로 개발 중이다.
 
-- **시세**: [pykrx](https://github.com/sharebook-kr/pykrx)로 가져오는 EOD(장마감 후 일별) 데이터. 실시간 아님 — 하루 한 번 갱신되는 값.
-- **주문 체결**: 자체 시뮬레이션(`SimulatedExecutor`). 매수/매도 시 최신 종가로 즉시 체결.
+- **시세·시장 상태**: 네이버 증권 현재가와 장 상태를 사용하며, pykrx로 저장한 일봉은 워크포워드 검증에 사용한다.
+- **자율 운용**: 서버 프로세스는 24시간 유지하고 정규장에 5분 간격으로 후보 분석, 로컬 EXAONE 판단, 위험 검증, 모의 체결을 수행한다. 장 종료·휴장 상태에서는 주문하지 않는다.
+- **주문 체결**: 자체 시뮬레이션(`SimulatedExecutor`). 슬리피지·수수료·매도세를 반영한다.
+- **안전장**: 종목당 최대 비중, 일일 손실 한도, 손절·수익보호, 주문 수 제한, 동일 종목 재주문 쿨다운을 코드에서 강제한다.
 - **확장 설계**: `MarketDataProvider` / `OrderExecutor` 인터페이스로 분리되어 있어, 나중에 KIS 계좌가 준비되면 실시간 구현체로 갈아끼우기만 하면 됨(다른 코드 변경 불필요).
 
 ## 백엔드 실행
@@ -34,6 +36,13 @@ KRX_PW=본인_비밀번호
 
 `.env`는 `.gitignore`에 포함되어 커밋되지 않는다. 절대 코드나 커밋에 직접 넣지 말 것.
 
+로컬 AI 코파일럿에서 Context7 최신 개발 문서를 사용하려면 다음 값을 추가한다. 일반 투자 질문에는 Context7를 호출하지 않으며, 채팅에서 `/docs next.js 질문` 또는 `/context7 /owner/repo 질문` 형식으로 요청할 때만 사용한다.
+
+```
+CONTEXT7_ENABLED=true
+CONTEXT7_API_KEY=발급받은_키
+```
+
 종목 마스터 + 가격이력 적재 (전체 KOSPI+KOSDAQ ~2,700종목, 순차 처리라 느림 — 확인용으로는 일부만 로딩하는 것을 권장):
 
 ```bash
@@ -45,6 +54,27 @@ uv run --env-file .env python -m app.load_market_data
 ```bash
 uv run --env-file .env uvicorn app.main:app --reload --port 8000
 ```
+
+자율운용 설정 예시:
+
+```env
+AI_AUTONOMOUS_ENABLED=true
+AI_AUTONOMOUS_INTERVAL_SECONDS=300
+AI_AUTONOMOUS_MAX_ORDERS_PER_CYCLE=10
+AI_AUTONOMOUS_CASH_RESERVE_PCT=0
+AI_AUTONOMOUS_COOLDOWN_MINUTES=60
+AI_AUTONOMOUS_STOP_LOSS_PCT=5
+AI_AUTONOMOUS_TAKE_PROFIT_PCT=12
+AI_MAX_POSITION_PCT=20
+AI_MAX_DAILY_LOSS_PCT=3
+SIMULATED_SLIPPAGE_BPS=5
+SIMULATED_COMMISSION_BPS=1.5
+SIMULATED_SELL_TAX_BPS=15
+```
+
+정상 장중에는 현금 보유 목표를 0%로 두고 종목당 최대 비중 안에서 가용 현금을 전액 분산한다. 체결 단위와 거래 비용 때문에 생기는 소액 잔액만 남는다. 운용 상태와 최근 사이클은 `/agent/autonomous/status`, `/agent/autonomous/cycles`에서 확인한다. 시작·중지·즉시 분석은 각각 `/agent/autonomous/start`, `/stop`, `/run`, 저장된 일봉 워크포워드 검증은 `POST /agent/autonomous/backtest?days=60&universe=50`을 사용한다.
+
+AI 전용 성과 실험은 `POST /agent/experiment/start`로 기존 상태를 내부 보관한 뒤 새 초기자본에서 시작하고, `GET /agent/experiment`에서 실험 수익률·최대 낙폭·KOSPI 대비 초과수익을 확인한다. 현재 macOS 환경에서는 `ops/com.kis-paper-trading.backend.plist`가 LaunchAgent로 등록되어 로그인 후 자동 시작, 장애 시 재시작, 운용 중 유휴 절전 방지를 담당한다. 상태는 `/health`와 `launchctl print gui/501/com.kis-paper-trading.backend`로 확인한다.
 
 테스트:
 

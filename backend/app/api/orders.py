@@ -42,7 +42,10 @@ def create_order(req: OrderRequest, request: Request):
 def list_orders(request: Request):
     if request.app.state.executor.process_pending_orders() > 0:
         _record_portfolio_snapshot(request)
-    return repository.get_orders(request.app.state.conn)
+    experiment = repository.get_active_experiment(request.app.state.conn)
+    return repository.get_orders(
+        request.app.state.conn, experiment["started_at"] if experiment else None
+    )
 
 
 @router.delete("/orders/{order_id}")

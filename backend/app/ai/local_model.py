@@ -23,7 +23,13 @@ def ask_local_model(system_prompt: str, user_prompt: str) -> str:
 
     response = requests.post(
         f"{base_url}/api/generate",
-        json={"model": model, "system": system_prompt, "prompt": user_prompt, "stream": False},
+        json={
+            "model": model,
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "stream": False,
+            "options": {"temperature": 0.1, "num_ctx": 8192},
+        },
         timeout=90,
     )
     response.raise_for_status()
@@ -41,7 +47,13 @@ def stream_local_model(system_prompt: str, user_prompt: str):
 
     response = requests.post(
         f"{base_url}/api/generate",
-        json={"model": model, "system": system_prompt, "prompt": user_prompt, "stream": True},
+        json={
+            "model": model,
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "stream": True,
+            "options": {"temperature": 0.1, "num_ctx": 8192},
+        },
         timeout=120,
         stream=True,
     )

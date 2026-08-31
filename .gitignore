@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 *.db
+backend/logs/
 node_modules/
 .next/
 .env

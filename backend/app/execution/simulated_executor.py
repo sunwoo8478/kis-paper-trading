@@ -1,3 +1,5 @@
+import os
+
 from .. import repository
 from ..market_data.base import MarketDataProvider
 from .base import OrderExecutionError, OrderExecutor, OrderResult
@@ -20,9 +22,9 @@ class SimulatedExecutor(OrderExecutor):
         if order_type == "limit" and (limit_price is None or limit_price <= 0):
             raise OrderExecutionError("limit price must be positive")
 
-        price = self.provider.get_latest_price(code)
+        market_price = self.provider.get_latest_price(code)
 
-        if order_type == "limit" and not self._is_marketable(side, price, limit_price):
+        if order_type == "limit" and not self._is_marketable(side, market_price, limit_price):
             self._validate_capacity(code, side, quantity, limit_price)
             order_id = repository.record_order(
                 self.conn, code, side, quantity, limit_price, status="pending", order_type="limit", limit_price=limit_price
@@ -32,6 +34,9 @@ class SimulatedExecutor(OrderExecutor):
                 fill_price=None, status="pending", order_type="limit", limit_price=limit_price,
             )
 
+        price = self._simulated_fill_price(side, market_price)
+        if order_type == "limit" and limit_price is not None:
+            price = min(price, limit_price) if side == "buy" else max(price, limit_price)
         try:
             self._apply_fill(code, side, quantity, price, commit=False)
             order_id = repository.record_order(
@@ -51,11 +56,17 @@ class SimulatedExecutor(OrderExecutor):
         filled = 0
         for order in repository.get_pending_orders(self.conn):
             try:
-                price = self.provider.get_latest_price(order["code"])
-                if not self._is_marketable(order["side"], price, order["limit_price"]):
+                market_price = self.provider.get_latest_price(order["code"])
+                if not self._is_marketable(order["side"], market_price, order["limit_price"]):
                     continue
+                price = self._simulated_fill_price(order["side"], market_price)
+                price = (
+                    min(price, order["limit_price"])
+                    if order["side"] == "buy"
+                    else max(price, order["limit_price"])
+                )
                 self._apply_fill(order["code"], order["side"], order["quantity"], price, commit=False)
-                repository.fill_pending_order(self.conn, order["id"], price)
+                repository.fill_pending_order(self.conn, order["id"], price, order["quantity"])
                 filled += 1
             except (OrderExecutionError, ValueError):
                 continue
@@ -91,3 +102,12 @@ class SimulatedExecutor(OrderExecutor):
         if limit_price is None:
             return True
         return current_price <= limit_price if side == "buy" else current_price >= limit_price
+
+    @staticmethod
+    def _simulated_fill_price(side: str, market_price: float) -> float:
+        slippage_bps = float(os.getenv("SIMULATED_SLIPPAGE_BPS", "0"))
+        commission_bps = float(os.getenv("SIMULATED_COMMISSION_BPS", "0"))
+        sell_tax_bps = float(os.getenv("SIMULATED_SELL_TAX_BPS", "0")) if side == "sell" else 0
+        total_bps = slippage_bps + commission_bps + sell_tax_bps
+        multiplier = 1 + total_bps / 10_000 if side == "buy" else 1 - total_bps / 10_000
+        return market_price * multiplier

@@ -62,6 +62,33 @@ def test_insert_snapshot_and_get_snapshots(conn):
     assert snapshots[0]["total_value"] == 1_000_000.0
 
 
+def test_start_paper_experiment_archives_state_and_resets_account(conn):
+    repository.apply_buy(conn, "005930", 10, 70_000.0)
+    repository.record_order(conn, "005930", "buy", 10, 70_000.0)
+
+    experiment = repository.start_paper_experiment(
+        conn, "AI 기준 실험", 2_000_000.0, "autonomous-v2"
+    )
+
+    assert experiment["status"] == "active"
+    assert repository.get_cash_balance(conn) == 2_000_000.0
+    assert repository.get_all_positions(conn) == []
+    archived = conn.execute(
+        "SELECT previous_state FROM paper_experiments WHERE id = ?", (experiment["id"],)
+    ).fetchone()[0]
+    assert '"005930"' in archived
+    performance = repository.get_experiment_performance(conn, 2_020_000.0)
+    assert performance["return_pct"] == pytest.approx(1.0)
+    assert performance["order_count"] == 0
+
+
+def test_autonomous_lease_prevents_duplicate_workers(conn):
+    assert repository.acquire_autonomous_lease(conn, "worker-a", 60) is True
+    assert repository.acquire_autonomous_lease(conn, "worker-b", 60) is False
+    repository.release_autonomous_lease(conn, "worker-a")
+    assert repository.acquire_autonomous_lease(conn, "worker-b", 60) is True
+
+
 from dataclasses import dataclass
 
 

@@ -29,4 +29,6 @@ def get_portfolio(request: Request):
 
 @router.get("/portfolio/history")
 def get_portfolio_history(request: Request):
-    return repository.get_snapshots(request.app.state.conn)
+    conn = request.app.state.conn
+    experiment = repository.get_active_experiment(conn)
+    return repository.get_snapshots(conn, experiment["started_at"] if experiment else None)

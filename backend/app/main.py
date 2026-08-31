@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from . import repository
+from .ai.autonomous import AutonomousTradingEngine
 from .api import agent, alerts, analytics, journal, market, news, orders, portfolio, stocks, watchlist
 from .config import load_settings
 from .execution.simulated_executor import SimulatedExecutor
@@ -31,7 +32,11 @@ async def lifespan(app: FastAPI):
     app.state.conn = conn
     app.state.provider = provider
     app.state.executor = executor
+    autonomous_engine = AutonomousTradingEngine(settings.db_path, provider)
+    app.state.autonomous_engine = autonomous_engine
+    autonomous_engine.start()
     yield
+    autonomous_engine.stop()
     conn.close()
 
 
@@ -51,4 +56,16 @@ app.include_router(watchlist.router)
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    engine = app.state.autonomous_engine
+    runtime = engine.status()
+    return {
+        "status": "degraded" if runtime["last_error"] else "ok",
+        "database": "connected",
+        "autonomous": {
+            "enabled": runtime["enabled"],
+            "running": runtime["running"],
+            "phase": runtime["phase"],
+            "last_cycle_at": runtime["last_cycle_at"],
+            "last_error": runtime["last_error"],
+        },
+    }
