@@ -38,6 +38,14 @@ def _config(**overrides):
     return KisPaperConfig(**values)
 
 
+def test_client_configures_automatic_retry_when_no_session_given():
+    client = KisPaperClient(_config())
+
+    adapter = client.session.get_adapter("https://openapivts.koreainvestment.com")
+
+    assert adapter.max_retries.total == 2
+
+
 def test_status_never_exposes_credentials():
     client = KisPaperClient(_config())
 

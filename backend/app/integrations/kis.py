@@ -9,6 +9,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class KisApiError(RuntimeError):
@@ -73,7 +75,14 @@ class KisPaperClient:
         session: requests.Session | None = None,
     ):
         self.config = config or KisPaperConfig.from_env()
-        self.session = session or requests.Session()
+        if session is not None:
+            self.session = session
+        else:
+            self.session = requests.Session()
+            retry = Retry(total=2, connect=2, read=2, backoff_factor=0.3, status_forcelist=[502, 503, 504])
+            adapter = HTTPAdapter(max_retries=retry)
+            self.session.mount("https://", adapter)
+            self.session.mount("http://", adapter)
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = threading.Lock()
