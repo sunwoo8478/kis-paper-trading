@@ -72,6 +72,18 @@ SIMULATED_COMMISSION_BPS=1.5
 SIMULATED_SELL_TAX_BPS=15
 ```
 
+시장 국면(`market_regime`)별 목표 투자비중 재정의 (기본값 아래와 동일, 낙폭에 따라 추가로 축소됨). `bearish`는 하락 국면 세분화 이전의 레거시 값이며, 하락 국면은 실제로는 낙폭·RSI에 따라 `correction`/`oversold`/`structural_decline`/`recession_rebalance` 중 하나로 분류된다:
+
+```env
+AI_BULLISH_TARGET_EXPOSURE_PCT=100
+AI_NEUTRAL_TARGET_EXPOSURE_PCT=80
+AI_CORRECTION_TARGET_EXPOSURE_PCT=60
+AI_OVERSOLD_TARGET_EXPOSURE_PCT=50
+AI_STRUCTURAL_DECLINE_TARGET_EXPOSURE_PCT=20
+AI_RECESSION_REBALANCE_TARGET_EXPOSURE_PCT=0
+AI_BEARISH_TARGET_EXPOSURE_PCT=20
+```
+
 아래 세 값은 기본적으로 비활성 상태이며, 실거래 유사 제약을 켜려면 명시적으로 설정해야 한다:
 
 ```env

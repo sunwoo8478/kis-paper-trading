@@ -149,7 +149,7 @@ class AutonomousTradingEngine:
                     risk = build_portfolio_risk(conn, self.provider)
                     total_value = risk["total_value"]
                     candidates = self._rank_candidates(conn)
-                    market_regime = self._market_regime(candidates)
+                    market_regime = self._market_regime(candidates, risk)
                     target_exposure_pct = self._target_exposure_pct(market_regime, risk)
                     prompt = self._build_prompt(risk, candidates, market_regime)
                     raw = ask_local_model(_AUTONOMOUS_SYSTEM_PROMPT, prompt)
@@ -321,7 +321,7 @@ class AutonomousTradingEngine:
         return (
             f"총자산 {risk['total_value']:.0f}원, 현금 {risk['cash']:.0f}원, "
             f"누적수익률 {risk['total_return_pct']:.2f}%, 최대낙폭 {risk['max_drawdown_pct']:.2f}%\n"
-            f"시장 국면 {market_regime}. bearish 국면에서는 신규 매수를 제안하지 마라.\n"
+            f"시장 국면 {market_regime}. structural_decline/recession_rebalance/bearish 국면에서는 신규 매수를 제안하지 마라.\n"
             "위험 한도를 지키면서 가용 현금을 전액 분산하도록 매수 후보를 충분히 선택하라.\n"
             f"보유종목: {positions}\n후보:\n" + "\n".join(candidate_lines)
         )
@@ -394,17 +394,23 @@ class AutonomousTradingEngine:
                     "daily_loss_limit",
                     f"일일 손실 한도 {-max_daily_loss_pct:.1f}% 도달로 신규 매수 중단",
                 )
-        if market_regime == "bearish":
+        blocked_regimes = {"structural_decline", "recession_rebalance", "bearish"}
+        if market_regime in blocked_regimes:
+            regime_label = {
+                "structural_decline": "구조적 하락",
+                "recession_rebalance": "침체 리밸런싱",
+                "bearish": "하락장",
+            }[market_regime]
             for item in proposed_buys or [{"code": None}]:
                 block(
                     str(item.get("code") or "") or None,
                     "buy",
                     "bearish_regime",
-                    "하락장으로 분류되어 신규 매수 중단",
+                    f"{regime_label} 국면으로 분류되어 신규 매수 중단",
                 )
         if len(guarded) >= max_orders:
             block(None, "buy", "cycle_order_limit", "사이클당 주문 수 한도 도달")
-        if not buying_allowed or market_regime == "bearish" or len(guarded) >= max_orders:
+        if not buying_allowed or market_regime in blocked_regimes or len(guarded) >= max_orders:
             return guarded[:max_orders], blocked
 
         proposed_reasons = {
@@ -495,23 +501,51 @@ class AutonomousTradingEngine:
         return guarded[:max_orders], blocked
 
     @staticmethod
-    def _market_regime(candidates: list[dict]) -> str:
+    def _market_regime(candidates: list[dict], risk: dict | None = None) -> str:
         directional = [item["score"] for item in candidates if abs(item["score"]) >= 25]
         if not directional:
             return "neutral"
         bullish_ratio = sum(score > 0 for score in directional) / len(directional)
-        if bullish_ratio <= 0.35:
-            return "bearish"
         if bullish_ratio >= 0.65:
             return "bullish"
-        return "neutral"
+        if bullish_ratio > 0.35:
+            return "neutral"
+        if risk is None:
+            return "bearish"
+
+        max_drawdown = float(risk.get("max_drawdown_pct") or 0)
+        rsi_values = [
+            item["rsi14"] for item in candidates
+            if abs(item["score"]) >= 25 and item.get("rsi14") is not None
+        ]
+        avg_rsi = sum(rsi_values) / len(rsi_values) if rsi_values else 50.0
+
+        if max_drawdown <= -15:
+            return "recession_rebalance"
+        if avg_rsi <= 30:
+            return "oversold"
+        if max_drawdown <= -7:
+            return "structural_decline"
+        return "correction"
 
     @staticmethod
     def _target_exposure_pct(market_regime: str, risk: dict) -> float:
-        defaults = {"bullish": 100.0, "neutral": 80.0, "bearish": 20.0}
+        defaults = {
+            "bullish": 100.0,
+            "neutral": 80.0,
+            "correction": 60.0,
+            "oversold": 50.0,
+            "structural_decline": 20.0,
+            "recession_rebalance": 0.0,
+            "bearish": 20.0,
+        }
         env_names = {
             "bullish": "AI_BULLISH_TARGET_EXPOSURE_PCT",
             "neutral": "AI_NEUTRAL_TARGET_EXPOSURE_PCT",
+            "correction": "AI_CORRECTION_TARGET_EXPOSURE_PCT",
+            "oversold": "AI_OVERSOLD_TARGET_EXPOSURE_PCT",
+            "structural_decline": "AI_STRUCTURAL_DECLINE_TARGET_EXPOSURE_PCT",
+            "recession_rebalance": "AI_RECESSION_REBALANCE_TARGET_EXPOSURE_PCT",
             "bearish": "AI_BEARISH_TARGET_EXPOSURE_PCT",
         }
         target = float(os.getenv(env_names.get(market_regime, ""), defaults.get(market_regime, 0.0)))

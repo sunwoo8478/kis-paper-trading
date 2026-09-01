@@ -67,6 +67,31 @@ def test_market_regime_blocks_new_risk_when_breadth_is_bearish():
     assert AutonomousTradingEngine._market_regime(candidates) == "bearish"
 
 
+def test_market_regime_stays_bearish_without_risk_data():
+    candidates = [{"score": -50}, {"score": -40}, {"score": -30}, {"score": 30}]
+    assert AutonomousTradingEngine._market_regime(candidates) == "bearish"
+
+
+def test_market_regime_classifies_recession_on_severe_drawdown():
+    candidates = [{"score": -50, "rsi14": 45}, {"score": -40, "rsi14": 45}, {"score": 30, "rsi14": 45}]
+    assert AutonomousTradingEngine._market_regime(candidates, {"max_drawdown_pct": -18}) == "recession_rebalance"
+
+
+def test_market_regime_classifies_oversold_on_low_rsi():
+    candidates = [{"score": -50, "rsi14": 20}, {"score": -40, "rsi14": 22}, {"score": 30, "rsi14": 25}]
+    assert AutonomousTradingEngine._market_regime(candidates, {"max_drawdown_pct": -8}) == "oversold"
+
+
+def test_market_regime_classifies_structural_decline_on_moderate_drawdown():
+    candidates = [{"score": -50, "rsi14": 45}, {"score": -40, "rsi14": 48}, {"score": 30, "rsi14": 50}]
+    assert AutonomousTradingEngine._market_regime(candidates, {"max_drawdown_pct": -8}) == "structural_decline"
+
+
+def test_market_regime_classifies_correction_on_shallow_drawdown():
+    candidates = [{"score": -50, "rsi14": 45}, {"score": -40, "rsi14": 48}, {"score": 30, "rsi14": 50}]
+    assert AutonomousTradingEngine._market_regime(candidates, {"max_drawdown_pct": -2}) == "correction"
+
+
 def test_target_exposure_changes_by_regime_and_drawdown(monkeypatch):
     monkeypatch.setenv("AI_BULLISH_TARGET_EXPOSURE_PCT", "100")
     monkeypatch.setenv("AI_NEUTRAL_TARGET_EXPOSURE_PCT", "80")
@@ -152,6 +177,28 @@ def test_autonomous_cycle_cooldown_prevents_repeated_buy(tmp_path, monkeypatch):
     assert latest_cycle["market_regime"] == "bullish"
     assert latest_cycle["target_exposure_pct"] == 100
     assert any(item["rule"] == "cooldown" for item in latest_cycle["blocked_decisions"])
+    conn.close()
+
+
+def test_structural_decline_regime_blocks_new_buys(tmp_path):
+    db_path = str(tmp_path / "structural-decline.db")
+    _seed_diversified_uptrends(db_path)
+    engine = AutonomousTradingEngine(db_path, FixedPriceProvider())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000, "cash": 1_000_000, "evaluated_value": 0,
+        "positions": [], "max_drawdown_pct": 0,
+    }
+    candidates = [{"code": "000001", "score": 50, "change_pct": 1}]
+
+    decisions, blocked = engine._guard_decisions(
+        conn, risk, candidates,
+        [{"code": "000001", "action": "buy", "reason": "추세"}],
+        "structural_decline", 20,
+    )
+
+    assert decisions == []
+    assert any(item["rule"] == "bearish_regime" for item in blocked)
     conn.close()
 
 
