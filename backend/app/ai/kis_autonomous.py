@@ -370,6 +370,7 @@ class KisPaperAutonomousEngine:
         by_code = {item["code"]: item for item in candidates}
         max_orders = max(1, int(os.getenv("KIS_PAPER_MAX_ORDERS_PER_CYCLE", "5")))
         max_position_pct = float(os.getenv("KIS_PAPER_MAX_POSITION_PCT", "20"))
+        cash_reserve_pct = max(0.0, float(os.getenv("KIS_PAPER_CASH_RESERVE_PCT", "0")))
         stop_loss_pct = float(os.getenv("KIS_PAPER_STOP_LOSS_PCT", "5"))
         take_profit_pct = float(os.getenv("KIS_PAPER_TAKE_PROFIT_PCT", "12"))
         cooldown_minutes = max(0, int(os.getenv("KIS_PAPER_COOLDOWN_MINUTES", "60")))
@@ -417,8 +418,9 @@ class KisPaperAutonomousEngine:
             if item["score"] >= 25 and item["code"] not in proposed_reasons
         )
         target_invested = risk["total_value"] * target_exposure_pct / 100
+        spendable_cash = max(0.0, risk["cash"] - risk["total_value"] * cash_reserve_pct / 100)
         remaining_cash = min(
-            risk["cash"],
+            spendable_cash,
             max(0.0, target_invested - risk["evaluated_value"]),
         )
         for code in ordered_codes:

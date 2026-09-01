@@ -123,6 +123,19 @@ def kis_broker_orders(request: Request):
     return orders
 
 
+@router.post("/kis/orders/{broker_order_id}/cancel")
+def kis_cancel_order(
+    broker_order_id: str,
+    request: Request,
+    branch_code: str = Query(...),
+    quantity: int = Query(default=0),
+):
+    try:
+        return request.app.state.kis_client.cancel_order(broker_order_id, branch_code, quantity)
+    except KisApiError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/kis/orders")
 def kis_place_order(req: KisOrderRequest, request: Request):
     executor = KisPaperExecutor(request.app.state.kis_client, request.app.state.conn)

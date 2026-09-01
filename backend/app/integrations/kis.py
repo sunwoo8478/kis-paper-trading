@@ -65,6 +65,7 @@ class KisPaperClient:
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     DAILY_ORDERS_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
     BUYING_POWER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+    CANCEL_PATH = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 
     def __init__(
         self,
@@ -285,6 +286,33 @@ class KisPaperClient:
             "quantity": quantity,
             "order_type": order_type,
             "status": "submitted",
+            "source": "kis-paper",
+        }
+
+    def cancel_order(self, broker_order_id: str, branch_code: str, quantity: int = 0) -> dict[str, Any]:
+        self._require_account()
+        if not self.config.order_enabled:
+            raise KisApiError("KIS 모의투자 주문 전송이 잠겨 있습니다")
+        payload = self._request(
+            "POST",
+            self.CANCEL_PATH,
+            "VTTC0013U",
+            json_body={
+                "CANO": self.config.account_number,
+                "ACNT_PRDT_CD": self.config.product_code,
+                "KRX_FWDG_ORD_ORGNO": branch_code,
+                "ORGN_ODNO": broker_order_id,
+                "ORD_DVSN": "00",
+                "RVSE_CNCL_DVSN_CD": "02",
+                "ORD_QTY": str(max(0, quantity)),
+                "ORD_UNPR": "0",
+                "QTY_ALL_ORD_YN": "Y" if quantity <= 0 else "N",
+            },
+        )
+        output = payload.get("output") or {}
+        return {
+            "broker_order_id": output.get("ODNO") or output.get("odno") or broker_order_id,
+            "status": "cancelled",
             "source": "kis-paper",
         }
 

@@ -27,6 +27,13 @@ class _Client:
         self.orders.append({"code": code, "side": side, "quantity": quantity})
         return {"broker_order_id": str(10000 + len(self.orders)), "status": "submitted"}
 
+    def cancel_order(self, broker_order_id, branch_code, quantity=0):
+        if not self.order_enabled:
+            from app.integrations.kis import KisApiError
+            raise KisApiError("KIS 모의투자 주문 전송이 잠겨 있습니다")
+        self.cancelled = (broker_order_id, branch_code, quantity)
+        return {"broker_order_id": broker_order_id, "status": "cancelled"}
+
 
 def _seed(db_path):
     conn = sqlite3.connect(db_path)
@@ -49,6 +56,21 @@ def test_kis_place_order_executes_via_executor(tmp_path, monkeypatch):
     assert body["broker_order_id"] == "10001"
     assert body["code"] == "005930"
     assert body["side"] == "buy"
+
+
+def test_kis_cancel_order_forwards_to_client(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "cancel-orders.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _seed(db_path)
+
+    with TestClient(app) as client:
+        fake = _Client()
+        app.state.kis_client = fake
+        response = client.post("/kis/orders/0000015242/cancel?branch_code=00950")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert fake.cancelled == ("0000015242", "00950", 0)
 
 
 def test_kis_place_order_rejects_when_locked(tmp_path, monkeypatch):

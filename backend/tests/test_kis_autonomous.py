@@ -130,6 +130,29 @@ def test_kis_engine_uses_kis_balance_and_records_separate_cycle(
     conn.close()
 
 
+def test_kis_cash_reserve_limits_buy_deployment(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "cash-reserve.db")
+    _seed(db_path)
+    monkeypatch.setenv("KIS_PAPER_CASH_RESERVE_PCT", "20")
+    monkeypatch.setenv("KIS_PAPER_MAX_POSITION_PCT", "100")
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000, "cash": 1_000_000, "evaluated_value": 0,
+        "positions": [], "max_drawdown_pct": 0,
+    }
+    candidates = [{"code": "005930", "score": 50, "change_pct": 1}]
+
+    decisions, blocked = engine._guard_decisions(
+        conn, risk, candidates,
+        [{"code": "005930", "action": "buy", "reason": "추세"}],
+        "neutral", 100,
+    )
+
+    assert sum(item["quantity"] * 1000 for item in decisions) == 800_000
+    conn.close()
+
+
 def test_kis_engine_waits_while_broker_order_has_remaining_quantity(
     tmp_path,
     monkeypatch,
