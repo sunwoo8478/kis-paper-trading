@@ -50,7 +50,7 @@ export function AiOperationsPanel() {
       <div className="grid flex-1 grid-cols-2">
         <Cell icon={Power} label="24H 모의 엔진" value={engine?.enabled ? "KIS ACTIVE" : "STOPPED"} tone={engine?.enabled ? "ready" : "warning"} />
         <Cell icon={Clock3} label="시장 상태" value={engine?.market_open ? "정규장" : "장외 감시"} tone={engine?.market_open ? "ready" : undefined} />
-        <Cell icon={Gauge} label="실행 계좌" value="KIS 모의투자" tone="ready" />
+        <Cell icon={Gauge} label="운용 전략" value={engine?.strategy_mode === "competition_3m" ? "3M COMPETITION" : "STANDARD"} tone="ready" />
         <Cell icon={TrendingDown} label="엔진 단계" value={cycleLabel(engine?.phase)} tone={engine?.phase === "error" ? "warning" : undefined} />
         <Cell icon={Activity} label="최근 사이클" value={cycleLabel(engine?.latest_cycle?.status)} tone={engine?.latest_cycle?.status === "error" ? "warning" : undefined} />
         <Cell icon={Bot} label="최근 자율 주문" value={latestOrderLabel(latestOrderIds)} />
@@ -64,7 +64,7 @@ export function AiOperationsPanel() {
           <RefreshCw className={`h-3.5 w-3.5 ${pendingAction === "run" ? "animate-spin" : ""}`} />즉시 분석
         </Button>
         {kisAutonomous.error && <p className="col-span-2 text-[9px] text-destructive">자율운용 상태를 불러오지 못했습니다.</p>}
-        <p className="col-span-2 truncate text-[9px] text-muted-foreground">한국투자증권 대회형 모의계좌 주문</p>
+        <p className="col-span-2 truncate text-[9px] text-muted-foreground">{engine?.latest_cycle?.market_regime ?? "시장 분석 대기"} · 목표 투자비중 {engine?.latest_cycle?.target_exposure_pct?.toFixed(0) ?? "-"}% · 데이터 {engine?.market_data_as_of ?? "갱신 중"}</p>
       </div>
     </section>
   );

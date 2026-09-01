@@ -104,6 +104,8 @@ export type KisAutonomousStatus = {
   enabled: boolean;
   running: boolean;
   phase: string;
+  strategy_mode: "standard" | "competition_3m" | string;
+  market_data_as_of: string | null;
   market_open: boolean;
   last_cycle_at: string | null;
   next_cycle_at: string | null;
@@ -111,6 +113,8 @@ export type KisAutonomousStatus = {
   latest_cycle: {
     id: number;
     status: string;
+    market_regime: string | null;
+    target_exposure_pct: number | null;
     broker_order_ids: string[];
     blocked_decisions: { code: string; action: string; rule: string; reason: string }[];
   } | null;
