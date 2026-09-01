@@ -153,6 +153,94 @@ def test_kis_cash_reserve_limits_buy_deployment(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_kis_buy_quantity_capped_by_volume_participation(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "volume-cap.db")
+    _seed(db_path)
+    monkeypatch.setenv("KIS_PAPER_MAX_VOLUME_PARTICIPATION_PCT", "1")
+    monkeypatch.setenv("KIS_PAPER_MAX_POSITION_PCT", "100")
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 100_000_000, "cash": 100_000_000, "evaluated_value": 0,
+        "positions": [], "max_drawdown_pct": 0,
+    }
+    candidates = [{"code": "005930", "score": 50, "change_pct": 1}]
+
+    decisions, blocked = engine._guard_decisions(
+        conn, risk, candidates,
+        [{"code": "005930", "action": "buy", "reason": "추세"}],
+        "neutral", 100,
+    )
+
+    assert decisions[0]["quantity"] == 1000
+    conn.close()
+
+
+def test_kis_buy_quantity_uncapped_when_volume_participation_disabled(tmp_path):
+    db_path = str(tmp_path / "volume-cap-disabled.db")
+    _seed(db_path)
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 100_000_000, "cash": 100_000_000, "evaluated_value": 0,
+        "positions": [], "max_drawdown_pct": 0,
+    }
+    candidates = [{"code": "005930", "score": 50, "change_pct": 1}]
+
+    decisions, blocked = engine._guard_decisions(
+        conn, risk, candidates,
+        [{"code": "005930", "action": "buy", "reason": "추세"}],
+        "neutral", 100,
+    )
+
+    assert decisions[0]["quantity"] == 20_000
+    conn.close()
+
+
+def test_kis_rotation_sell_exits_weakening_position_even_without_stop_loss(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "rotation-sell.db")
+    _seed(db_path)
+    monkeypatch.setenv("KIS_PAPER_ROTATION_SELL_SCORE", "-10")
+    monkeypatch.setenv("KIS_PAPER_STOP_LOSS_PCT", "50")
+    monkeypatch.setattr(
+        "app.ai.kis_autonomous.calculate_stock_analytics",
+        lambda history: {"technical_bias": {"score": -30}, "momentum": {"rsi14": 40, "macd_histogram": 0}},
+    )
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000, "cash": 500_000, "evaluated_value": 500_000,
+        "positions": [{"code": "005930", "name": "삼성전자", "quantity": 10, "avg_price": 990.0, "return_pct": -1.0}],
+        "max_drawdown_pct": 0,
+    }
+
+    decisions, blocked = engine._guard_decisions(conn, risk, [], [], "neutral", 80)
+
+    assert any(item["code"] == "005930" and item["action"] == "sell" for item in decisions)
+    conn.close()
+
+
+def test_kis_rotation_sell_disabled_by_default(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "rotation-sell-disabled.db")
+    _seed(db_path)
+    monkeypatch.setattr(
+        "app.ai.kis_autonomous.calculate_stock_analytics",
+        lambda history: {"technical_bias": {"score": -30}, "momentum": {"rsi14": 40, "macd_histogram": 0}},
+    )
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000, "cash": 500_000, "evaluated_value": 500_000,
+        "positions": [{"code": "005930", "name": "삼성전자", "quantity": 10, "avg_price": 990.0, "return_pct": -1.0}],
+        "max_drawdown_pct": 0,
+    }
+
+    decisions, blocked = engine._guard_decisions(conn, risk, [], [], "neutral", 80)
+
+    assert not any(item["code"] == "005930" and item["action"] == "sell" for item in decisions)
+    conn.close()
+
+
 def test_kis_engine_waits_while_broker_order_has_remaining_quantity(
     tmp_path,
     monkeypatch,

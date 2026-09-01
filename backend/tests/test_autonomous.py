@@ -202,6 +202,50 @@ def test_structural_decline_regime_blocks_new_buys(tmp_path):
     conn.close()
 
 
+def test_rotation_sell_exits_weakening_position_even_without_stop_loss(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "rotation-sell.db")
+    _seed_uptrend(db_path)
+    monkeypatch.setenv("AI_AUTONOMOUS_ROTATION_SELL_SCORE", "-10")
+    monkeypatch.setenv("AI_AUTONOMOUS_STOP_LOSS_PCT", "50")
+    monkeypatch.setattr(
+        "app.ai.autonomous.calculate_stock_analytics",
+        lambda history: {"technical_bias": {"score": -30}, "momentum": {"rsi14": 40, "macd_histogram": 0}},
+    )
+    engine = AutonomousTradingEngine(db_path, FixedPriceProvider())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000, "cash": 500_000, "evaluated_value": 500_000,
+        "positions": [{"code": "005930", "name": "삼성전자", "quantity": 10, "avg_price": 990.0, "return_pct": -1.0, "market_value": 9800.0}],
+        "max_drawdown_pct": 0,
+    }
+
+    decisions, blocked = engine._guard_decisions(conn, risk, [], [], "neutral", 80)
+
+    assert any(item["code"] == "005930" and item["action"] == "sell" for item in decisions)
+    conn.close()
+
+
+def test_rotation_sell_disabled_by_default(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "rotation-sell-disabled.db")
+    _seed_uptrend(db_path)
+    monkeypatch.setattr(
+        "app.ai.autonomous.calculate_stock_analytics",
+        lambda history: {"technical_bias": {"score": -30}, "momentum": {"rsi14": 40, "macd_histogram": 0}},
+    )
+    engine = AutonomousTradingEngine(db_path, FixedPriceProvider())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000, "cash": 500_000, "evaluated_value": 500_000,
+        "positions": [{"code": "005930", "name": "삼성전자", "quantity": 10, "avg_price": 990.0, "return_pct": -1.0, "market_value": 9800.0}],
+        "max_drawdown_pct": 0,
+    }
+
+    decisions, blocked = engine._guard_decisions(conn, risk, [], [], "neutral", 80)
+
+    assert not any(item["code"] == "005930" and item["action"] == "sell" for item in decisions)
+    conn.close()
+
+
 def test_neutral_regime_limits_cash_deployment_to_target_exposure(tmp_path, monkeypatch):
     db_path = str(tmp_path / "neutral-target.db")
     _seed_diversified_uptrends(db_path)

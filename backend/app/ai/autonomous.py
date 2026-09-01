@@ -308,6 +308,16 @@ class AutonomousTradingEngine:
     def _days_behind(candidate_date: str, freshest_date: str) -> int:
         return (datetime.fromisoformat(freshest_date) - datetime.fromisoformat(candidate_date)).days
 
+    @staticmethod
+    def _position_score(conn, by_code: dict, code: str) -> float | None:
+        candidate = by_code.get(code)
+        if candidate is not None:
+            return candidate["score"]
+        history = repository.get_price_history(conn, code)
+        if not history:
+            return None
+        return calculate_stock_analytics(history)["technical_bias"]["score"]
+
     def _build_prompt(self, risk: dict, candidates: list[dict], market_regime: str = "neutral") -> str:
         positions = ", ".join(
             f"{item['code']} {item['quantity']}주 수익률{item['return_pct']:.2f}%"
@@ -342,6 +352,7 @@ class AutonomousTradingEngine:
         cash_reserve_pct = max(0.0, float(os.getenv("AI_AUTONOMOUS_CASH_RESERVE_PCT", "0")))
         stop_loss_pct = float(os.getenv("AI_AUTONOMOUS_STOP_LOSS_PCT", "5"))
         take_profit_pct = float(os.getenv("AI_AUTONOMOUS_TAKE_PROFIT_PCT", "12"))
+        rotation_sell_score = float(os.getenv("AI_AUTONOMOUS_ROTATION_SELL_SCORE", "-1000"))
         max_daily_loss_pct = float(os.getenv("AI_MAX_DAILY_LOSS_PCT", "3"))
         cooldown_minutes = max(0, int(os.getenv("AI_AUTONOMOUS_COOLDOWN_MINUTES", "60")))
         daily_loss_pct = self._daily_loss_pct(conn, risk["total_value"])
@@ -370,6 +381,13 @@ class AutonomousTradingEngine:
                     "quantity": max(1, position["quantity"] // 2),
                     "reason": f"수익 보호 기준 {take_profit_pct:.1f}% 도달",
                 })
+            else:
+                score = self._position_score(conn, by_code, position["code"])
+                if score is not None and score <= rotation_sell_score:
+                    guarded.append({
+                        "code": position["code"], "action": "sell", "quantity": position["quantity"],
+                        "reason": f"기술 전망 약화(점수 {score:.0f})로 선제 로테이션 매도",
+                    })
 
         for item in proposed:
             if len(guarded) >= max_orders:

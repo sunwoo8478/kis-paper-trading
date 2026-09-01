@@ -373,6 +373,7 @@ class KisPaperAutonomousEngine:
         cash_reserve_pct = max(0.0, float(os.getenv("KIS_PAPER_CASH_RESERVE_PCT", "0")))
         stop_loss_pct = float(os.getenv("KIS_PAPER_STOP_LOSS_PCT", "5"))
         take_profit_pct = float(os.getenv("KIS_PAPER_TAKE_PROFIT_PCT", "12"))
+        rotation_sell_score = float(os.getenv("KIS_PAPER_ROTATION_SELL_SCORE", "-1000"))
         cooldown_minutes = max(0, int(os.getenv("KIS_PAPER_COOLDOWN_MINUTES", "60")))
         decisions: list[dict] = []
         blocked: list[dict] = []
@@ -395,6 +396,15 @@ class KisPaperAutonomousEngine:
                     "quantity": max(1, position["quantity"] // 2),
                     "reason": f"수익 보호 기준 {take_profit_pct:.1f}% 도달",
                 })
+            else:
+                score = self._position_score(conn, by_code, position["code"])
+                if score is not None and score <= rotation_sell_score:
+                    decisions.append({
+                        "code": position["code"],
+                        "action": "sell",
+                        "quantity": position["quantity"],
+                        "reason": f"기술 전망 약화(점수 {score:.0f})로 선제 로테이션 매도",
+                    })
 
         proposed_buys = [item for item in proposed if item.get("action") == "buy"]
         if market_regime == "bearish":
@@ -449,6 +459,9 @@ class KisPaperAutonomousEngine:
                 continue
             allocation = min(remaining_cash, capacity)
             quantity = int(allocation // price) if price > 0 else 0
+            volume_cap = self._volume_cap(conn, code)
+            if volume_cap is not None:
+                quantity = min(quantity, volume_cap)
             if quantity <= 0:
                 block(code, "buy", "insufficient_budget", "목표 비중 내 예산 부족")
                 continue
@@ -460,6 +473,27 @@ class KisPaperAutonomousEngine:
             })
             remaining_cash -= quantity * price
         return decisions[:max_orders], blocked
+
+    @staticmethod
+    def _position_score(conn, by_code: dict, code: str) -> float | None:
+        candidate = by_code.get(code)
+        if candidate is not None:
+            return candidate["score"]
+        history = repository.get_price_history(conn, code)
+        if not history:
+            return None
+        return calculate_stock_analytics(history)["technical_bias"]["score"]
+
+    @staticmethod
+    def _volume_cap(conn, code: str) -> int | None:
+        participation_pct = float(os.getenv("KIS_PAPER_MAX_VOLUME_PARTICIPATION_PCT", "0"))
+        if participation_pct <= 0:
+            return None
+        avg_volume = repository.get_average_volume(conn, code)
+        if not avg_volume:
+            return None
+        cap = int(avg_volume * participation_pct / 100)
+        return cap if cap > 0 else None
 
     def _execute(self, conn, decisions: list[dict]) -> list[str]:
         executor = KisPaperExecutor(self.client, conn)
