@@ -5,7 +5,8 @@ import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Activity, Bell, BookOpen, Bot, Building2, Newspaper, RefreshCw, ShoppingCart, Star, Wrench } from "lucide-react";
-import { ApiError, addToWatchlist, type OhlcvBar, getOrders, getPortfolio, getStockHistory, getStockQuote, getWatchlist, removeFromWatchlist, searchStocks } from "@/lib/api";
+import { ApiError, addToWatchlist, type OhlcvBar, getKisBalance, getKisBrokerOrders, getOrders, getPortfolio, getStockHistory, getStockQuote, getWatchlist, removeFromWatchlist, searchStocks } from "@/lib/api";
+import { useAccountSource } from "@/components/account-source-provider";
 import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,17 +37,42 @@ export default function StockDetailPage() {
   const code = Array.isArray(params.code) ? params.code[0] : params.code;
   const [timeframe, setTimeframe] = useState<Timeframe>("3M");
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("order");
+  const { source } = useAccountSource();
+  const isKis = source === "kis";
   const history = useSWR(["/api/stocks", code, "history"], () => getStockHistory(code), { refreshInterval: 10000 });
   const watchlist = useSWR("/api/watchlist", getWatchlist, { refreshInterval: 10000 });
   const quote = useSWR(["/api/stocks", code, "quote"], async () => (await searchStocks(code)).find((stock) => stock.code === code) ?? null);
   const liveQuote = useSWR(["/api/stocks", code, "live-quote"], () => getStockQuote(code), { refreshInterval: 8000, onErrorRetry: () => {} });
-  const portfolio = useSWR("/api/portfolio", getPortfolio, { refreshInterval: 10000 });
-  const orders = useSWR("/api/orders", getOrders, { refreshInterval: 10000 });
+  const portfolio = useSWR(isKis ? null : "/api/portfolio", getPortfolio, { refreshInterval: 10000 });
+  const orders = useSWR(isKis ? null : "/api/orders", getOrders, { refreshInterval: 10000 });
+  const kisBalance = useSWR(isKis ? "/api/kis/balance" : null, getKisBalance, { refreshInterval: 10000 });
+  const kisOrders = useSWR(isKis ? "/api/kis/broker-orders" : null, getKisBrokerOrders, { refreshInterval: 10000 });
   const historyData = history.data ?? [];
   const chartData = selectHistory(historyData, timeframe);
   const watched = (watchlist.data ?? []).some((stock) => stock.code === code);
-  const position = (portfolio.data?.positions ?? []).find((entry) => entry.code === code) ?? null;
-  const recentOrders = (orders.data ?? []).filter((order) => order.code === code).slice(0, 5);
+  const cash = isKis ? kisBalance.data?.cash ?? null : portfolio.data?.cash ?? null;
+  const totalValue = isKis ? kisBalance.data?.total_value ?? null : portfolio.data?.total_value ?? null;
+  const evaluatedValue = isKis ? kisBalance.data?.evaluated_value ?? null : portfolio.data?.evaluated_value ?? null;
+  const kisPosition = (kisBalance.data?.positions ?? []).find((entry) => entry.code === code) ?? null;
+  const position = isKis
+    ? kisPosition && { quantity: kisPosition.quantity, avg_price: kisPosition.avg_price }
+    : (portfolio.data?.positions ?? []).find((entry) => entry.code === code) ?? null;
+  const positionQuantity = isKis ? kisPosition?.available_quantity ?? 0 : position?.quantity ?? 0;
+  const recentOrders = isKis
+    ? (kisOrders.data ?? [])
+        .filter((order) => order.code === code)
+        .slice(0, 5)
+        .map((order) => ({
+          id: order.broker_order_id,
+          side: order.side,
+          quantity: order.filled_quantity || order.requested_quantity,
+          price: order.avg_fill_price ?? 0,
+          filled_at: order.order_time,
+        }))
+    : (orders.data ?? [])
+        .filter((order) => order.code === code)
+        .slice(0, 5)
+        .map((order) => ({ id: order.id, side: order.side, quantity: order.quantity, price: order.price, filled_at: order.filled_at }));
   const latestBar = historyData.at(-1) ?? null;
   const technicals = calculateTechnicals(historyData);
   const currentPrice = liveQuote.data?.price ?? quote.data?.last_price ?? latestBar?.close ?? null;
@@ -57,7 +83,7 @@ export default function StockDetailPage() {
     try { if (watched) await removeFromWatchlist(code); else await addToWatchlist(code); watchlist.mutate(); }
     catch (error) { toast.error(error instanceof ApiError ? error.message : "관심종목 처리 실패"); }
   };
-  const refreshAll = () => { history.mutate(); watchlist.mutate(); quote.mutate(); liveQuote.mutate(); portfolio.mutate(); orders.mutate(); };
+  const refreshAll = () => { history.mutate(); watchlist.mutate(); quote.mutate(); liveQuote.mutate(); portfolio.mutate(); orders.mutate(); kisBalance.mutate(); kisOrders.mutate(); };
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
@@ -68,11 +94,12 @@ export default function StockDetailPage() {
             <h1 className="mt-2 text-2xl font-semibold tracking-tight">{quote.data ? quote.data.name : code}</h1>
             <p className="mt-1 text-[10px] text-muted-foreground">가격, 주문, 수급, 재무와 리서치</p>
           </div>
-          <RefreshBadge hasError={Boolean(history.error || portfolio.error || orders.error)} isValidating={history.isValidating || portfolio.isValidating || orders.isValidating} onRefresh={refreshAll} />
+          <RefreshBadge hasError={Boolean(history.error || portfolio.error || orders.error || kisBalance.error || kisOrders.error)} isValidating={history.isValidating || portfolio.isValidating || orders.isValidating || kisBalance.isValidating || kisOrders.isValidating} onRefresh={refreshAll} />
         </div>
         <div className="xl:col-span-8">
           <div className="flex min-h-11 items-center justify-end gap-2 border-b border-border px-3"><Button variant="ghost" size="sm" onClick={toggleWatch}><Star className="h-3.5 w-3.5" />{watched ? "관심 해제" : "관심 추가"}</Button><Button variant="ghost" size="sm" onClick={refreshAll}><RefreshCw className="h-3.5 w-3.5" />새로고침</Button></div>
           <div className="grid grid-cols-2 sm:grid-cols-4"><Metric label="현재가" value={formatPrice(currentPrice)} tone={changeColorClass(changePct)} /><Metric label="전일대비" value={formatChangePct(changePct)} tone={changeColorClass(changePct)} /><Metric label="보유수량" value={position ? `${position.quantity}주` : "-"} /><Metric label="평단가" value={position ? formatPrice(position.avg_price) : "-"} /></div>
+          <p className="px-4 pb-2 text-[9px] text-muted-foreground">{isKis ? "KIS 모의계좌" : "로컬 시뮬레이터"} 기준</p>
         </div>
       </section>
 
@@ -94,15 +121,15 @@ export default function StockDetailPage() {
           <section className="flex h-full min-h-[700px] flex-col overflow-hidden bg-muted/15">
             <div className="grid grid-cols-8 border-b border-border bg-card p-1">{WORKSPACE_TABS.map((tab) => <button key={tab.key} type="button" onClick={() => setWorkspaceTab(tab.key)} className={cn("flex min-w-0 flex-col items-center gap-1 rounded-lg px-0.5 py-2 text-[8px] transition", workspaceTab === tab.key ? "bg-foreground text-background shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><tab.icon className="h-3.5 w-3.5" /><span>{tab.label}</span></button>)}</div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {workspaceTab === "order" && <Card className="gap-0 border-border bg-card py-0 shadow-none"><CardHeader className="border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">주문 실행</CardTitle></CardHeader><CardContent className="p-4"><OrderForm code={code} currentPrice={currentPrice} availableCash={portfolio.data?.cash ?? null} positionQuantity={position?.quantity ?? 0} onOrdered={() => { history.mutate(); portfolio.mutate(); orders.mutate(); }} /></CardContent></Card>}
-              {workspaceTab === "analysis" && <TechnicalAnalysisPanel code={code} />}{workspaceTab === "insight" && <StockInsightPanel code={code} />}{workspaceTab === "tools" && <TradeToolsPanel currentPrice={currentPrice} availableCash={portfolio.data?.cash ?? null} />}{workspaceTab === "ai" && <AiResearchPanel code={code} />}{workspaceTab === "news" && <MarketNewsPanel stockCode={code} compact />}{workspaceTab === "alerts" && <PriceAlertPanel code={code} currentPrice={currentPrice} />}{workspaceTab === "journal" && <TradeJournalPanel code={code} />}
+              {workspaceTab === "order" && <Card className="gap-0 border-border bg-card py-0 shadow-none"><CardHeader className="border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">주문 실행</CardTitle></CardHeader><CardContent className="p-4"><OrderForm code={code} currentPrice={currentPrice} availableCash={cash} positionQuantity={positionQuantity} target={isKis ? "kis" : "local"} onOrdered={() => { history.mutate(); portfolio.mutate(); orders.mutate(); kisBalance.mutate(); kisOrders.mutate(); }} /></CardContent></Card>}
+              {workspaceTab === "analysis" && <TechnicalAnalysisPanel code={code} />}{workspaceTab === "insight" && <StockInsightPanel code={code} />}{workspaceTab === "tools" && <TradeToolsPanel currentPrice={currentPrice} availableCash={cash} />}{workspaceTab === "ai" && <AiResearchPanel code={code} />}{workspaceTab === "news" && <MarketNewsPanel stockCode={code} compact />}{workspaceTab === "alerts" && <PriceAlertPanel code={code} currentPrice={currentPrice} />}{workspaceTab === "journal" && <TradeJournalPanel code={code} />}
             </div>
           </section>
         </aside>
       </section>
 
       <section className="grid xl:grid-cols-12">
-        <Card className="gap-0 rounded-none border-0 border-b bg-card py-0 shadow-none ring-0 xl:col-span-4 xl:border-b-0 xl:border-r"><CardHeader className="min-h-14 border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">포지션 요약</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-x-5 gap-y-3 p-5 text-xs"><Line label="총자산" value={formatPrice(portfolio.data?.total_value ?? null)} /><Line label="현금" value={formatPrice(portfolio.data?.cash ?? null)} /><Line label="평가금액" value={formatPrice(portfolio.data?.evaluated_value ?? null)} /><Line label="평가손익" value={position && currentPrice !== null ? `${KRW.format((currentPrice - position.avg_price) * position.quantity)}원` : "-"} /></CardContent></Card>
+        <Card className="gap-0 rounded-none border-0 border-b bg-card py-0 shadow-none ring-0 xl:col-span-4 xl:border-b-0 xl:border-r"><CardHeader className="min-h-14 border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">포지션 요약</CardTitle></CardHeader><CardContent className="grid grid-cols-2 gap-x-5 gap-y-3 p-5 text-xs"><Line label="총자산" value={formatPrice(totalValue)} /><Line label="현금" value={formatPrice(cash)} /><Line label="평가금액" value={formatPrice(evaluatedValue)} /><Line label="평가손익" value={position && currentPrice !== null ? `${KRW.format((currentPrice - position.avg_price) * position.quantity)}원` : "-"} /></CardContent></Card>
         <Card className="gap-0 rounded-none border-0 bg-card py-0 shadow-none ring-0 xl:col-span-8"><CardHeader className="min-h-14 border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">최근 주문</CardTitle></CardHeader><CardContent className="grid gap-0 p-0 sm:grid-cols-2 xl:grid-cols-5">{recentOrders.length === 0 ? <div className="p-4 sm:col-span-2 xl:col-span-5"><EmptyCopy title="주문 없음" text="이 종목의 주문 기록이 아직 없습니다." /></div> : recentOrders.map((order) => <div key={order.id} className="border-b border-r border-border px-3 py-3 last:border-r-0"><div className="flex items-center justify-between gap-2"><p className={cn("text-[10px] font-medium", order.side === "buy" ? "text-red-500" : "text-blue-500")}>{order.side === "buy" ? "매수" : "매도"}</p><p className="font-mono text-[9px] text-muted-foreground">{order.quantity}주</p></div><p className="mt-1 font-mono text-xs">{KRW.format(order.price)}원</p><p className="mt-1 text-[8px] text-muted-foreground">{new Date(order.filled_at).toLocaleString("ko-KR")}</p></div>)}</CardContent></Card>
       </section>
     </div>

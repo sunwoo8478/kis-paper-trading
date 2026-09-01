@@ -487,7 +487,13 @@ export async function askKisCopilot(prompt: string): Promise<KisChatResponse> {
   return postJson<KisChatResponse>("/api/kis/chat", { prompt });
 }
 
-export async function placeKisOrder(proposal: KisOrderProposal): Promise<{
+export async function placeKisOrder(proposal: {
+  code: string;
+  side: "buy" | "sell";
+  quantity: number;
+  order_type?: "market" | "limit";
+  limit_price?: number | null;
+}): Promise<{
   order_id: number;
   broker_order_id: string | null;
   code: string;
@@ -497,7 +503,13 @@ export async function placeKisOrder(proposal: KisOrderProposal): Promise<{
   order_type: string;
   limit_price: number | null;
 }> {
-  return postJson("/api/kis/orders", { code: proposal.code, side: proposal.side, quantity: proposal.quantity });
+  return postJson("/api/kis/orders", {
+    code: proposal.code,
+    side: proposal.side,
+    quantity: proposal.quantity,
+    order_type: proposal.order_type ?? "market",
+    limit_price: proposal.limit_price ?? null,
+  });
 }
 
 export type CopilotChatMessage = { role: "user" | "assistant"; content: string; kisProposal?: KisOrderProposal | null };

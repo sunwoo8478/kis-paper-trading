@@ -12,7 +12,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { placeOrder, ApiError } from "@/lib/api";
+import { placeOrder, placeKisOrder, ApiError } from "@/lib/api";
 import { formatPrice } from "@/lib/format";
 
 const TOAST_DURATION_MS = 8000;
@@ -23,12 +23,14 @@ export function OrderForm({
   availableCash,
   positionQuantity,
   onOrdered,
+  target = "local",
 }: {
   code: string;
   currentPrice: number | null;
   availableCash?: number | null;
   positionQuantity?: number;
   onOrdered: () => void;
+  target?: "local" | "kis";
 }) {
   const [quantity, setQuantity] = useState("1");
   const [orderType, setOrderType] = useState<"market" | "limit">("market");
@@ -75,19 +77,33 @@ export function OrderForm({
 
     setSubmitting(true);
     try {
-      const result = await placeOrder({
-        code,
-        side,
-        quantity: parsedQuantity,
-        order_type: orderType,
-        limit_price: orderType === "limit" ? parsedLimitPrice : null,
-      });
-      toast.success(
-        result.status === "pending"
-          ? `${side === "buy" ? "매수" : "매도"} 지정가 주문이 대기열에 등록되었습니다.`
-          : `${side === "buy" ? "매수" : "매도"} 체결: ${result.quantity}주 @ ${formatPrice(result.fill_price)}`,
-        { duration: TOAST_DURATION_MS }
-      );
+      if (target === "kis") {
+        const result = await placeKisOrder({
+          code,
+          side,
+          quantity: parsedQuantity,
+          order_type: orderType,
+          limit_price: orderType === "limit" ? parsedLimitPrice : null,
+        });
+        toast.success(
+          `${side === "buy" ? "매수" : "매도"} 주문이 KIS 모의투자 계좌로 전송되었습니다 (주문번호 ${result.broker_order_id ?? result.order_id})`,
+          { duration: TOAST_DURATION_MS }
+        );
+      } else {
+        const result = await placeOrder({
+          code,
+          side,
+          quantity: parsedQuantity,
+          order_type: orderType,
+          limit_price: orderType === "limit" ? parsedLimitPrice : null,
+        });
+        toast.success(
+          result.status === "pending"
+            ? `${side === "buy" ? "매수" : "매도"} 지정가 주문이 대기열에 등록되었습니다.`
+            : `${side === "buy" ? "매수" : "매도"} 체결: ${result.quantity}주 @ ${formatPrice(result.fill_price)}`,
+          { duration: TOAST_DURATION_MS }
+        );
+      }
       onOrdered();
       setPendingSide(null);
     } catch (error) {
