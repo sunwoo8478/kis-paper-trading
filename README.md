@@ -72,6 +72,14 @@ SIMULATED_COMMISSION_BPS=1.5
 SIMULATED_SELL_TAX_BPS=15
 ```
 
+아래 세 값은 기본적으로 비활성 상태이며, 실거래 유사 제약을 켜려면 명시적으로 설정해야 한다:
+
+```env
+AI_CANDIDATE_STALE_DAYS=9999
+AI_CANDIDATE_MIN_AVG_TRADING_VALUE=0
+SIMULATED_MAX_VOLUME_PARTICIPATION_PCT=0
+```
+
 ### 한국투자증권 대회형 모의투자 연결
 
 기존 로컬 시뮬레이션 계좌는 그대로 유지하며 KIS 모의투자 계좌를 별도 어댑터로 연결할 수 있다.
