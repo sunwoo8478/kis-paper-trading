@@ -24,6 +24,7 @@ class _Client:
         self.order_enabled = order_enabled
         self.orders = []
         self.broker_orders = broker_orders or []
+        self.buying_power_cash = 10**12
 
     def status(self):
         return {
@@ -43,6 +44,9 @@ class _Client:
 
     def get_daily_orders(self):
         return self.broker_orders
+
+    def get_buying_power(self, code, price=None):
+        return {"orderable_cash": self.buying_power_cash, "reference_price": price or 1000.0}
 
     def place_cash_order(self, code, side, quantity, order_type, limit_price):
         self.orders.append({"code": code, "side": side, "quantity": quantity})
@@ -238,6 +242,51 @@ def test_kis_rotation_sell_disabled_by_default(tmp_path, monkeypatch):
     decisions, blocked = engine._guard_decisions(conn, risk, [], [], "neutral", 80)
 
     assert not any(item["code"] == "005930" and item["action"] == "sell" for item in decisions)
+    conn.close()
+
+
+def test_execute_caps_buy_quantity_to_realtime_orderable_cash(tmp_path):
+    db_path = str(tmp_path / "realtime-cap.db")
+    _seed(db_path)
+    client = _Client()
+    client.buying_power_cash = 5000
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), client)
+    conn = sqlite3.connect(db_path)
+
+    order_ids = engine._execute(conn, [{"code": "005930", "action": "buy", "quantity": 100, "reason": "test"}])
+
+    assert len(order_ids) == 1
+    assert client.orders[0]["quantity"] == 5
+    conn.close()
+
+
+def test_execute_skips_buy_when_no_realtime_orderable_cash(tmp_path):
+    db_path = str(tmp_path / "realtime-zero.db")
+    _seed(db_path)
+    client = _Client()
+    client.buying_power_cash = 0
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), client)
+    conn = sqlite3.connect(db_path)
+
+    order_ids = engine._execute(conn, [{"code": "005930", "action": "buy", "quantity": 100, "reason": "test"}])
+
+    assert order_ids == []
+    assert client.orders == []
+    conn.close()
+
+
+def test_execute_does_not_cap_sell_decisions(tmp_path):
+    db_path = str(tmp_path / "realtime-sell.db")
+    _seed(db_path)
+    client = _Client()
+    client.buying_power_cash = 0
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), client)
+    conn = sqlite3.connect(db_path)
+
+    order_ids = engine._execute(conn, [{"code": "005930", "action": "sell", "quantity": 10, "reason": "test"}])
+
+    assert len(order_ids) == 1
+    assert client.orders[0]["quantity"] == 10
     conn.close()
 
 

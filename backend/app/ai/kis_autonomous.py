@@ -501,11 +501,17 @@ class KisPaperAutonomousEngine:
         for index, decision in enumerate(decisions):
             if index:
                 time.sleep(0.6)
+            quantity = int(decision["quantity"])
+            if decision["action"] == "buy":
+                quantity = self._cap_to_realtime_buying_power(decision["code"], quantity)
+                if quantity <= 0:
+                    decision["execution_error"] = "실시간 주문가능금액 부족"
+                    continue
             try:
                 result = executor.place_order(
                     decision["code"],
                     decision["action"],
-                    int(decision["quantity"]),
+                    quantity,
                     reason=decision["reason"],
                 )
                 if result.broker_order_id:
@@ -513,6 +519,17 @@ class KisPaperAutonomousEngine:
             except OrderExecutionError as exc:
                 decision["execution_error"] = str(exc)
         return broker_order_ids
+
+    def _cap_to_realtime_buying_power(self, code: str, quantity: int) -> int:
+        try:
+            price = float(self.provider.get_latest_price(code))
+            if price <= 0:
+                return 0
+            power = self.client.get_buying_power(code, price)
+            max_affordable = int(power["orderable_cash"] // price)
+        except (KisApiError, ValueError, ZeroDivisionError, KeyError):
+            return 0
+        return max(0, min(quantity, max_affordable))
 
     def _connection(self):
         conn = sqlite3.connect(self.db_path)
