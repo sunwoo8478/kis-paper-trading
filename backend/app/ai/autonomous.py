@@ -268,9 +268,29 @@ class AutonomousTradingEngine:
             return False
 
     def _rank_candidates(self, conn) -> list[dict]:
+        raw_candidates = repository.get_candidates(conn)
+        histories = {
+            candidate["code"]: repository.get_price_history(conn, candidate["code"])
+            for candidate in raw_candidates
+        }
+        latest_dates = [history[-1]["date"] for history in histories.values() if history]
+        if not latest_dates:
+            return []
+        freshest_date = max(latest_dates)
+        stale_days = int(os.getenv("AI_CANDIDATE_STALE_DAYS", "9999"))
+        min_avg_trading_value = float(os.getenv("AI_CANDIDATE_MIN_AVG_TRADING_VALUE", "0"))
+
         ranked = []
-        for candidate in repository.get_candidates(conn):
-            history = repository.get_price_history(conn, candidate["code"])
+        for candidate in raw_candidates:
+            history = histories[candidate["code"]]
+            if not history:
+                continue
+            if self._days_behind(history[-1]["date"], freshest_date) > stale_days:
+                continue
+            recent = history[-20:]
+            avg_trading_value = sum(bar["close"] * bar["volume"] for bar in recent) / len(recent)
+            if avg_trading_value < min_avg_trading_value:
+                continue
             analytics = calculate_stock_analytics(history)
             score = analytics["technical_bias"]["score"]
             if abs(score) < 25:
@@ -283,6 +303,10 @@ class AutonomousTradingEngine:
             })
         ranked.sort(key=lambda item: abs(item["score"]), reverse=True)
         return ranked[:12]
+
+    @staticmethod
+    def _days_behind(candidate_date: str, freshest_date: str) -> int:
+        return (datetime.fromisoformat(freshest_date) - datetime.fromisoformat(candidate_date)).days
 
     def _build_prompt(self, risk: dict, candidates: list[dict], market_regime: str = "neutral") -> str:
         positions = ", ".join(

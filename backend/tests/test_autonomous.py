@@ -235,6 +235,63 @@ def test_walk_forward_backtest_uses_previous_data_and_returns_metrics(tmp_path, 
     conn.close()
 
 
+def test_rank_candidates_excludes_stale_and_illiquid_codes(tmp_path, monkeypatch):
+    from app.market_data.base import Stock
+
+    db_path = str(tmp_path / "liquidity.db")
+    conn = sqlite3.connect(db_path)
+    repository.init_db(conn, 1_000_000)
+    repository.upsert_stocks(conn, [
+        Stock("000001", "정상종목", "KOSPI"),
+        Stock("000002", "거래대금부족", "KOSPI"),
+        Stock("000003", "데이터오래됨", "KOSPI"),
+    ])
+    fresh_bars = [
+        OhlcvBar(
+            date=f"2026-06-{index + 1:02d}", open=900 + index, high=920 + index,
+            low=890 + index, close=900 + index * 2, volume=50_000 + index,
+        )
+        for index in range(30)
+    ]
+    thin_bars = [
+        OhlcvBar(
+            date=f"2026-06-{index + 1:02d}", open=900 + index, high=920 + index,
+            low=890 + index, close=900 + index * 2, volume=10,
+        )
+        for index in range(30)
+    ]
+    stale_bars = fresh_bars[:-10]
+    repository.upsert_price_history(conn, "000001", fresh_bars)
+    repository.upsert_price_history(conn, "000002", thin_bars)
+    repository.upsert_price_history(conn, "000003", stale_bars)
+    conn.close()
+
+    monkeypatch.setenv("AI_CANDIDATE_STALE_DAYS", "5")
+    monkeypatch.setenv("AI_CANDIDATE_MIN_AVG_TRADING_VALUE", "1000000")
+    engine = AutonomousTradingEngine(db_path, FixedPriceProvider())
+    conn = sqlite3.connect(db_path)
+
+    ranked = engine._rank_candidates(conn)
+
+    codes = {item["code"] for item in ranked}
+    assert "000001" in codes
+    assert "000002" not in codes
+    assert "000003" not in codes
+    conn.close()
+
+
+def test_rank_candidates_filter_disabled_by_default(tmp_path):
+    db_path = str(tmp_path / "liquidity-default.db")
+    _seed_uptrend(db_path)
+    engine = AutonomousTradingEngine(db_path, FixedPriceProvider())
+    conn = sqlite3.connect(db_path)
+
+    ranked = engine._rank_candidates(conn)
+
+    assert any(item["code"] == "005930" for item in ranked)
+    conn.close()
+
+
 def test_walk_forward_backtest_skips_zero_open_prices(tmp_path):
     db_path = str(tmp_path / "zero-open.db")
     _seed_uptrend(db_path)
