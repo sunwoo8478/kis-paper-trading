@@ -409,6 +409,21 @@ export async function getKisBalance(): Promise<KisBalance> {
   return fetcher<KisBalance>("/api/kis/balance");
 }
 
+export type KisBuyingPower = {
+  code: string;
+  reference_price: number;
+  orderable_cash: number;
+  cash_only_buying_power: number;
+  cash_only_quantity: number;
+  max_buying_power: number;
+  max_quantity: number;
+  source: "kis-paper";
+};
+
+export async function getKisBuyingPower(code: string): Promise<KisBuyingPower> {
+  return fetcher<KisBuyingPower>(`/api/kis/buying-power?code=${encodeURIComponent(code)}`);
+}
+
 export async function getKisBrokerOrders(): Promise<KisBrokerOrder[]> {
   return fetcher<KisBrokerOrder[]>("/api/kis/broker-orders");
 }

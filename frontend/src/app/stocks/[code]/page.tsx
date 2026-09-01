@@ -5,7 +5,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { Activity, Bell, BookOpen, Bot, Building2, Newspaper, RefreshCw, ShoppingCart, Star, Wrench } from "lucide-react";
-import { ApiError, addToWatchlist, type OhlcvBar, getKisBalance, getKisBrokerOrders, getOrders, getPortfolio, getStockHistory, getStockQuote, getWatchlist, removeFromWatchlist, searchStocks } from "@/lib/api";
+import { ApiError, addToWatchlist, type OhlcvBar, getKisBalance, getKisBrokerOrders, getKisBuyingPower, getOrders, getPortfolio, getStockHistory, getStockQuote, getWatchlist, removeFromWatchlist, searchStocks } from "@/lib/api";
 import { useAccountSource } from "@/components/account-source-provider";
 import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,10 +47,12 @@ export default function StockDetailPage() {
   const orders = useSWR(isKis ? null : "/api/orders", getOrders, { refreshInterval: 10000 });
   const kisBalance = useSWR(isKis ? "/api/kis/balance" : null, getKisBalance, { refreshInterval: 10000 });
   const kisOrders = useSWR(isKis ? "/api/kis/broker-orders" : null, getKisBrokerOrders, { refreshInterval: 10000 });
+  const kisBuyingPower = useSWR(isKis ? ["/api/kis/buying-power", code] : null, () => getKisBuyingPower(code), { refreshInterval: 10000 });
   const historyData = history.data ?? [];
   const chartData = selectHistory(historyData, timeframe);
   const watched = (watchlist.data ?? []).some((stock) => stock.code === code);
   const cash = isKis ? kisBalance.data?.cash ?? null : portfolio.data?.cash ?? null;
+  const orderableCash = isKis ? kisBuyingPower.data?.orderable_cash ?? null : cash;
   const totalValue = isKis ? kisBalance.data?.total_value ?? null : portfolio.data?.total_value ?? null;
   const evaluatedValue = isKis ? kisBalance.data?.evaluated_value ?? null : portfolio.data?.evaluated_value ?? null;
   const kisPosition = (kisBalance.data?.positions ?? []).find((entry) => entry.code === code) ?? null;
@@ -83,7 +85,7 @@ export default function StockDetailPage() {
     try { if (watched) await removeFromWatchlist(code); else await addToWatchlist(code); watchlist.mutate(); }
     catch (error) { toast.error(error instanceof ApiError ? error.message : "관심종목 처리 실패"); }
   };
-  const refreshAll = () => { history.mutate(); watchlist.mutate(); quote.mutate(); liveQuote.mutate(); portfolio.mutate(); orders.mutate(); kisBalance.mutate(); kisOrders.mutate(); };
+  const refreshAll = () => { history.mutate(); watchlist.mutate(); quote.mutate(); liveQuote.mutate(); portfolio.mutate(); orders.mutate(); kisBalance.mutate(); kisOrders.mutate(); kisBuyingPower.mutate(); };
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
@@ -94,7 +96,7 @@ export default function StockDetailPage() {
             <h1 className="mt-2 text-2xl font-semibold tracking-tight">{quote.data ? quote.data.name : code}</h1>
             <p className="mt-1 text-[10px] text-muted-foreground">가격, 주문, 수급, 재무와 리서치</p>
           </div>
-          <RefreshBadge hasError={Boolean(history.error || portfolio.error || orders.error || kisBalance.error || kisOrders.error)} isValidating={history.isValidating || portfolio.isValidating || orders.isValidating || kisBalance.isValidating || kisOrders.isValidating} onRefresh={refreshAll} />
+          <RefreshBadge hasError={Boolean(history.error || portfolio.error || orders.error || kisBalance.error || kisOrders.error || kisBuyingPower.error)} isValidating={history.isValidating || portfolio.isValidating || orders.isValidating || kisBalance.isValidating || kisOrders.isValidating || kisBuyingPower.isValidating} onRefresh={refreshAll} />
         </div>
         <div className="xl:col-span-8">
           <div className="flex min-h-11 items-center justify-end gap-2 border-b border-border px-3"><Button variant="ghost" size="sm" onClick={toggleWatch}><Star className="h-3.5 w-3.5" />{watched ? "관심 해제" : "관심 추가"}</Button><Button variant="ghost" size="sm" onClick={refreshAll}><RefreshCw className="h-3.5 w-3.5" />새로고침</Button></div>
@@ -121,8 +123,8 @@ export default function StockDetailPage() {
           <section className="flex h-full min-h-[700px] flex-col overflow-hidden bg-muted/15">
             <div className="grid grid-cols-8 border-b border-border bg-card p-1">{WORKSPACE_TABS.map((tab) => <button key={tab.key} type="button" onClick={() => setWorkspaceTab(tab.key)} className={cn("flex min-w-0 flex-col items-center gap-1 rounded-lg px-0.5 py-2 text-[8px] transition", workspaceTab === tab.key ? "bg-foreground text-background shadow-sm" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><tab.icon className="h-3.5 w-3.5" /><span>{tab.label}</span></button>)}</div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
-              {workspaceTab === "order" && <Card className="gap-0 border-border bg-card py-0 shadow-none"><CardHeader className="border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">주문 실행</CardTitle></CardHeader><CardContent className="p-4"><OrderForm code={code} currentPrice={currentPrice} availableCash={cash} positionQuantity={positionQuantity} target={isKis ? "kis" : "local"} onOrdered={() => { history.mutate(); portfolio.mutate(); orders.mutate(); kisBalance.mutate(); kisOrders.mutate(); }} /></CardContent></Card>}
-              {workspaceTab === "analysis" && <TechnicalAnalysisPanel code={code} />}{workspaceTab === "insight" && <StockInsightPanel code={code} />}{workspaceTab === "tools" && <TradeToolsPanel currentPrice={currentPrice} availableCash={cash} />}{workspaceTab === "ai" && <AiResearchPanel code={code} />}{workspaceTab === "news" && <MarketNewsPanel stockCode={code} compact />}{workspaceTab === "alerts" && <PriceAlertPanel code={code} currentPrice={currentPrice} />}{workspaceTab === "journal" && <TradeJournalPanel code={code} />}
+              {workspaceTab === "order" && <Card className="gap-0 border-border bg-card py-0 shadow-none"><CardHeader className="border-b bg-muted/25 px-4 py-3"><CardTitle className="text-sm">주문 실행</CardTitle></CardHeader><CardContent className="p-4"><OrderForm code={code} currentPrice={currentPrice} availableCash={orderableCash} positionQuantity={positionQuantity} target={isKis ? "kis" : "local"} onOrdered={() => { history.mutate(); portfolio.mutate(); orders.mutate(); kisBalance.mutate(); kisOrders.mutate(); kisBuyingPower.mutate(); }} /></CardContent></Card>}
+              {workspaceTab === "analysis" && <TechnicalAnalysisPanel code={code} />}{workspaceTab === "insight" && <StockInsightPanel code={code} />}{workspaceTab === "tools" && <TradeToolsPanel currentPrice={currentPrice} availableCash={orderableCash} />}{workspaceTab === "ai" && <AiResearchPanel code={code} />}{workspaceTab === "news" && <MarketNewsPanel stockCode={code} compact />}{workspaceTab === "alerts" && <PriceAlertPanel code={code} currentPrice={currentPrice} />}{workspaceTab === "journal" && <TradeJournalPanel code={code} />}
             </div>
           </section>
         </aside>
