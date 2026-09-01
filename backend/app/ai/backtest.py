@@ -30,6 +30,7 @@ def run_walk_forward_backtest(conn, days: int = 60, universe_size: int = 50) -> 
     equity_curve = []
     realized_returns = []
     trade_count = 0
+    traded_value = 0.0
     stop_loss_pct = float(os.getenv("AI_AUTONOMOUS_STOP_LOSS_PCT", "5"))
     take_profit_pct = float(os.getenv("AI_AUTONOMOUS_TAKE_PROFIT_PCT", "12"))
     max_positions = int(os.getenv("AI_BACKTEST_MAX_POSITIONS", "8"))
@@ -77,6 +78,7 @@ def run_walk_forward_backtest(conn, days: int = 60, universe_size: int = 50) -> 
             if should_sell:
                 fill = _fill_price("sell", open_price)
                 cash += fill * position["quantity"]
+                traded_value += fill * position["quantity"]
                 realized_returns.append((fill - position["avg_price"]) / position["avg_price"] * 100)
                 trade_count += 1
                 del positions[code]
@@ -111,6 +113,7 @@ def run_walk_forward_backtest(conn, days: int = 60, universe_size: int = 50) -> 
             if quantity <= 0:
                 continue
             cash -= fill * quantity
+            traded_value += fill * quantity
             positions[signal["code"]] = {"quantity": quantity, "avg_price": fill}
             trade_count += 1
 
@@ -143,6 +146,11 @@ def run_walk_forward_backtest(conn, days: int = 60, universe_size: int = 50) -> 
         if peak:
             max_drawdown = min(max_drawdown, (point["value"] - peak) / peak * 100)
 
+    gains = sum(value for value in realized_returns if value > 0)
+    losses = sum(-value for value in realized_returns if value < 0)
+    profit_factor = (gains / losses) if losses > 0 else (None if gains == 0 else float("inf"))
+    turnover_pct = (traded_value / initial_capital * 100) if initial_capital else 0.0
+
     return {
         "mode": "walk_forward_daily",
         "start_date": all_dates[0],
@@ -161,6 +169,8 @@ def run_walk_forward_backtest(conn, days: int = 60, universe_size: int = 50) -> 
             sum(value > 0 for value in realized_returns) / len(realized_returns) * 100
             if realized_returns else 0
         ),
+        "profit_factor": profit_factor,
+        "turnover_pct": turnover_pct,
         "open_positions": len(positions),
         "equity_curve": equity_curve,
         "costs_bps": {
@@ -201,7 +211,35 @@ def _empty_result(days: int, universe_size: int) -> dict:
         "trade_count": 0,
         "closed_trade_count": 0,
         "win_rate_pct": 0,
+        "profit_factor": None,
+        "turnover_pct": 0.0,
         "open_positions": 0,
         "equity_curve": [],
         "costs_bps": {},
     }
+
+
+def _verdict(result: dict) -> str:
+    alpha_pct = result.get("alpha_pct", 0)
+    if result["max_drawdown_pct"] <= -20 or alpha_pct <= -10:
+        return "fail"
+    if result["max_drawdown_pct"] <= -12 or alpha_pct < 0:
+        return "warn"
+    return "pass"
+
+
+def run_multi_period_backtest(
+    conn, periods: tuple[int, ...] = (60, 120, 252), universe_size: int = 50
+) -> dict:
+    period_results = []
+    for period_days in periods:
+        result = run_walk_forward_backtest(conn, days=period_days, universe_size=universe_size)
+        period_results.append({**result, "period_days": period_days, "verdict": _verdict(result)})
+
+    verdict_rank = {"pass": 0, "warn": 1, "fail": 2}
+    overall_verdict = max(
+        (period["verdict"] for period in period_results),
+        key=lambda verdict: verdict_rank[verdict],
+        default="pass",
+    )
+    return {"periods": period_results, "overall_verdict": overall_verdict}

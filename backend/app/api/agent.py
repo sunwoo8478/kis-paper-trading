@@ -17,7 +17,7 @@ from ..ai.local_model import (
     stream_local_model,
 )
 from ..ai.context7 import Context7Error, get_context_for_prompt, is_configured as context7_is_configured
-from ..ai.backtest import run_walk_forward_backtest
+from ..ai.backtest import run_walk_forward_backtest, run_multi_period_backtest
 from ..execution.base import OrderExecutionError
 from ..market_intelligence import NaverMarketIntelligenceProvider
 from .analytics import build_portfolio_risk
@@ -134,6 +134,11 @@ def run_autonomous_cycle(request: Request):
 @router.post("/agent/autonomous/backtest")
 def run_autonomous_backtest(request: Request, days: int = 60, universe: int = 50):
     return run_walk_forward_backtest(request.app.state.conn, days, universe)
+
+
+@router.get("/agent/autonomous/backtest/compare")
+def run_autonomous_backtest_comparison(request: Request, universe: int = 50):
+    return run_multi_period_backtest(request.app.state.conn, periods=(60, 120, 252), universe_size=universe)
 
 
 @router.post("/agent/runs")

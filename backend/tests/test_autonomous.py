@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 from app import repository
 from app.ai.autonomous import AutonomousTradingEngine, is_regular_market_open
-from app.ai.backtest import run_walk_forward_backtest
+from app.ai.backtest import run_walk_forward_backtest, run_multi_period_backtest
 from app.market_data.base import OhlcvBar, Stock
 
 KST = ZoneInfo("Asia/Seoul")
@@ -289,6 +289,32 @@ def test_rank_candidates_filter_disabled_by_default(tmp_path):
     ranked = engine._rank_candidates(conn)
 
     assert any(item["code"] == "005930" for item in ranked)
+    conn.close()
+
+
+def test_backtest_reports_profit_factor_and_turnover(tmp_path):
+    db_path = str(tmp_path / "profit-factor.db")
+    _seed_uptrend(db_path)
+    conn = sqlite3.connect(db_path)
+
+    result = run_walk_forward_backtest(conn, days=30, universe_size=10)
+
+    assert "profit_factor" in result
+    assert "turnover_pct" in result
+    assert result["turnover_pct"] >= 0
+    conn.close()
+
+
+def test_multi_period_backtest_runs_each_period_and_returns_verdict(tmp_path):
+    db_path = str(tmp_path / "multi-period.db")
+    _seed_uptrend(db_path)
+    conn = sqlite3.connect(db_path)
+
+    result = run_multi_period_backtest(conn, periods=(10, 20), universe_size=10)
+
+    assert [period["period_days"] for period in result["periods"]] == [10, 20]
+    assert all(period["verdict"] in {"pass", "warn", "fail"} for period in result["periods"])
+    assert result["overall_verdict"] in {"pass", "warn", "fail"}
     conn.close()
 
 

@@ -1,11 +1,12 @@
 import json
+import sqlite3
 
 from fastapi.testclient import TestClient
 
 from app import repository
 from app.ai.context7 import Context7Context
 from app.main import app
-from app.market_data.base import Stock
+from app.market_data.base import OhlcvBar, Stock
 from app.market_data.pykrx_provider import PykrxProvider
 
 
@@ -351,3 +352,28 @@ def test_agent_chat_stream_yields_chunks_then_meta(tmp_path, monkeypatch):
         assert "<<<COPILOT_META>>>" in body
         meta = json.loads(body.split("<<<COPILOT_META>>>")[1])
         assert meta == {"order_ids": [], "blocked": []}
+
+
+def test_autonomous_backtest_compare_returns_multi_period_verdicts(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    conn = sqlite3.connect(db_path)
+    repository.init_db(conn, 1_000_000)
+    repository.upsert_stocks(conn, [Stock("005930", "삼성전자", "KOSPI")])
+    bars = [
+        OhlcvBar(
+            date=f"2026-06-{index + 1:02d}", open=900 + index, high=910 + index,
+            low=890 + index, close=900 + index * 2, volume=1000 + index,
+        )
+        for index in range(30)
+    ]
+    repository.upsert_price_history(conn, "005930", bars)
+    conn.close()
+
+    with TestClient(app) as client:
+        response = client.get("/agent/autonomous/backtest/compare?universe=10")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [period["period_days"] for period in body["periods"]] == [60, 120, 252]
+    assert body["overall_verdict"] in {"pass", "warn", "fail"}
