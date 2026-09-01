@@ -18,6 +18,7 @@ import {
   streamCopilot,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { useAccountSource } from "@/components/account-source-provider";
 import { cn } from "@/lib/utils";
 
 type CopilotAction = "screen" | "risk" | "market" | "orders";
@@ -34,6 +35,8 @@ const QUICK_ACTION_PROMPTS: Record<CopilotAction, string> = {
 
 export function AiCopilot() {
   const pathname = usePathname();
+  const { source: accountSource } = useAccountSource();
+  const isKis = accountSource === "kis";
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -106,7 +109,7 @@ export function AiCopilot() {
     const history = messages;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
 
-    const kisResult = await askKisCopilot(question).catch(() => null);
+    const kisResult = isKis ? await askKisCopilot(question).catch(() => null) : null;
     if (kisResult?.proposal) {
       setMessages((prev) => [
         ...prev,
@@ -248,7 +251,7 @@ export function AiCopilot() {
   return (
     <aside ref={panelRef} className="fixed z-40 flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl" aria-label="AI 운용 코파일럿">
       <header onPointerDown={startDrag} className={cn("flex min-h-14 touch-none items-center justify-between border-b border-border px-4", expanded ? "cursor-default" : "cursor-grab active:cursor-grabbing")}>
-        <div className="flex items-center gap-2.5"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><Bot className="h-4 w-4" /></span><div><p className="text-sm font-semibold">운용 코파일럿</p><p className="text-[9px] text-muted-foreground">{scope} 컨텍스트</p></div></div>
+        <div className="flex items-center gap-2.5"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><Bot className="h-4 w-4" /></span><div><p className="text-sm font-semibold">운용 코파일럿 · {isKis ? "KIS 모의계좌" : "로컬 시뮬레이터"}</p><p className="text-[9px] text-muted-foreground">{scope} 컨텍스트</p></div></div>
         <div className="flex items-center gap-1"><Button variant="ghost" size="icon-sm" onClick={toggleExpanded} aria-label={expanded ? "코파일럿 축소" : "코파일럿 확대"}>{expanded ? <Minimize2 /> : <Maximize2 />}</Button><Button variant="ghost" size="icon-sm" onClick={() => setOpen(false)} aria-label="코파일럿 닫기"><X /></Button></div>
       </header>
 

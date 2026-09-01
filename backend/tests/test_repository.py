@@ -14,6 +14,16 @@ def conn():
     connection.close()
 
 
+def test_init_db_enables_wal_mode_and_busy_timeout(tmp_path):
+    db_path = str(tmp_path / "wal-test.db")
+    connection = sqlite3.connect(db_path)
+    repository.init_db(connection)
+
+    assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert connection.execute("PRAGMA busy_timeout").fetchone()[0] >= 5000
+    connection.close()
+
+
 def test_init_db_sets_initial_cash_balance(conn):
     assert repository.get_cash_balance(conn) == 1_000_000.0
 

@@ -187,6 +187,8 @@ CREATE TABLE IF NOT EXISTS kis_paper_snapshots (
 
 
 def init_db(conn: sqlite3.Connection, initial_capital: float = 10_000_000.0) -> None:
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(SCHEMA)
     _ensure_column(conn, "orders", "order_type", "TEXT NOT NULL DEFAULT 'market'")
     _ensure_column(conn, "orders", "limit_price", "REAL")
