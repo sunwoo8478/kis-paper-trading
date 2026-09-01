@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from . import repository
 from .ai.autonomous import AutonomousTradingEngine
+from .ai.kis_autonomous import KisPaperAutonomousEngine
 from .api import agent, alerts, analytics, journal, kis, market, news, orders, portfolio, stocks, watchlist
 from .config import load_settings
 from .execution.simulated_executor import SimulatedExecutor
@@ -37,7 +38,15 @@ async def lifespan(app: FastAPI):
     autonomous_engine = AutonomousTradingEngine(settings.db_path, provider)
     app.state.autonomous_engine = autonomous_engine
     autonomous_engine.start()
+    kis_autonomous_engine = KisPaperAutonomousEngine(
+        settings.db_path,
+        provider,
+        app.state.kis_client,
+    )
+    app.state.kis_autonomous_engine = kis_autonomous_engine
+    kis_autonomous_engine.start()
     yield
+    kis_autonomous_engine.stop()
     autonomous_engine.stop()
     conn.close()
 
@@ -62,6 +71,7 @@ def health() -> dict:
     engine = app.state.autonomous_engine
     runtime = engine.status()
     kis_status = app.state.kis_client.status()
+    kis_runtime = app.state.kis_autonomous_engine.status()
     return {
         "status": "degraded" if runtime["last_error"] else "ok",
         "database": "connected",
@@ -70,6 +80,9 @@ def health() -> dict:
             "authenticated": kis_status["authenticated"],
             "account_configured": kis_status["account_configured"],
             "order_enabled": kis_status["order_enabled"],
+            "autonomous_enabled": kis_runtime["enabled"],
+            "autonomous_phase": kis_runtime["phase"],
+            "last_error": kis_runtime["last_error"],
         },
         "autonomous": {
             "enabled": runtime["enabled"],

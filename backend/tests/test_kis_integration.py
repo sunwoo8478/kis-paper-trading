@@ -124,6 +124,7 @@ def test_balance_maps_positions_and_summary():
             }],
             "output2": [{
                 "dnca_tot_amt": "1000000",
+                "prvs_rcdl_excc_amt": "999000",
                 "tot_evlu_amt": "1220500",
                 "pchs_amt_smtl_amt": "210000",
                 "scts_evlu_amt": "220500",
@@ -135,7 +136,8 @@ def test_balance_maps_positions_and_summary():
 
     balance = client.get_balance()
 
-    assert balance["cash"] == 1_000_000
+    assert balance["cash"] == 999_000
+    assert balance["settled_cash"] == 1_000_000
     assert balance["total_value"] == 1_220_500
     assert balance["positions"][0]["quantity"] == 3
     assert session.calls[1][2]["headers"]["tr_id"] == "VTTC8434R"
@@ -163,3 +165,36 @@ def test_enabled_order_uses_current_paper_transaction_id():
     assert order["broker_order_id"] == "12345"
     assert session.calls[1][2]["headers"]["tr_id"] == "VTTC0012U"
     assert session.calls[1][2]["json"]["ORD_DVSN"] == "01"
+
+
+def test_daily_orders_distinguishes_partial_and_filled():
+    session = _Session([
+        _Response({"access_token": "token", "expires_in": 3600}),
+        _Response({
+            "rt_cd": "0",
+            "output1": [
+                {
+                    "odno": "1", "ord_gno_brno": "00950", "pdno": "005930",
+                    "prdt_name": "삼성전자", "sll_buy_dvsn_cd": "02",
+                    "ord_qty": "10", "tot_ccld_qty": "3", "rmn_qty": "7",
+                    "rjct_qty": "0", "cncl_yn": "N", "avg_prvs": "70000",
+                    "ord_tmd": "101500",
+                },
+                {
+                    "odno": "2", "ord_gno_brno": "00950", "pdno": "000660",
+                    "prdt_name": "SK하이닉스", "sll_buy_dvsn_cd": "02",
+                    "ord_qty": "2", "tot_ccld_qty": "2", "rmn_qty": "0",
+                    "rjct_qty": "0", "cncl_yn": "N", "avg_prvs": "300000",
+                    "ord_tmd": "101600",
+                },
+            ],
+        }),
+    ])
+    client = KisPaperClient(_config(), session)
+
+    orders = client.get_daily_orders("20260901")
+
+    assert orders[0]["status"] == "partial"
+    assert orders[0]["remaining_quantity"] == 7
+    assert orders[1]["status"] == "filled"
+    assert session.calls[1][2]["headers"]["tr_id"] == "VTTC0081R"

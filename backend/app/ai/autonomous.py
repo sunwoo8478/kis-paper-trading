@@ -252,8 +252,10 @@ class AutonomousTradingEngine:
                     self.run_cycle()
             except Exception as exc:
                 self._update_runtime(last_error=str(exc), phase="error")
-            self._wake.wait(self.interval_seconds)
+            if self._stop.is_set():
+                break
             self._wake.clear()
+            self._wake.wait(self.interval_seconds)
 
     def _market_open(self, now: datetime | None = None) -> bool:
         if not is_regular_market_open(now):

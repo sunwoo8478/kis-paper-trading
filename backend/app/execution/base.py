@@ -12,6 +12,7 @@ class OrderResult:
     status: str = "filled"
     order_type: str = "market"
     limit_price: float | None = None
+    broker_order_id: str | None = None
 
 
 class OrderExecutionError(Exception):

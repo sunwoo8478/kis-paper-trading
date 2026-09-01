@@ -129,6 +129,60 @@ CREATE TABLE IF NOT EXISTS trade_journal (
     tags TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS kis_paper_control (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kis_paper_lease (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    owner TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kis_paper_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    broker_order_id TEXT,
+    code TEXT NOT NULL,
+    side TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    order_type TEXT NOT NULL,
+    limit_price REAL,
+    status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    branch_code TEXT,
+    filled_quantity INTEGER NOT NULL DEFAULT 0,
+    remaining_quantity INTEGER NOT NULL DEFAULT 0,
+    avg_fill_price REAL,
+    reconciled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kis_paper_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    market_open INTEGER NOT NULL,
+    market_regime TEXT,
+    target_exposure_pct REAL,
+    decisions TEXT NOT NULL,
+    blocked_decisions TEXT NOT NULL,
+    broker_order_ids TEXT NOT NULL,
+    total_value REAL,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS kis_paper_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    total_value REAL NOT NULL,
+    cash REAL NOT NULL,
+    evaluated_value REAL NOT NULL,
+    pnl REAL NOT NULL
+);
 """
 
 
@@ -161,6 +215,11 @@ def init_db(conn: sqlite3.Connection, initial_capital: float = 10_000_000.0) -> 
         "blocked_decisions",
         "TEXT NOT NULL DEFAULT '[]'",
     )
+    _ensure_column(conn, "kis_paper_orders", "branch_code", "TEXT")
+    _ensure_column(conn, "kis_paper_orders", "filled_quantity", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "kis_paper_orders", "remaining_quantity", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "kis_paper_orders", "avg_fill_price", "REAL")
+    _ensure_column(conn, "kis_paper_orders", "reconciled_at", "TEXT")
     conn.execute(
         "INSERT OR IGNORE INTO account (id, cash_balance, initial_capital) VALUES (1, ?, ?)",
         (initial_capital, initial_capital),
@@ -504,6 +563,270 @@ def get_average_volume(conn: sqlite3.Connection, code: str, days: int = 20) -> f
         (code, max(1, days)),
     ).fetchone()
     return float(row[0]) if row and row[0] is not None else None
+
+
+def ensure_kis_paper_control(conn: sqlite3.Connection, enabled: bool = False) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT OR IGNORE INTO kis_paper_control (id, enabled, updated_at) VALUES (1, ?, ?)",
+        (int(enabled), now),
+    )
+    conn.commit()
+
+
+def set_kis_paper_enabled(conn: sqlite3.Connection, enabled: bool) -> None:
+    ensure_kis_paper_control(conn)
+    conn.execute(
+        "UPDATE kis_paper_control SET enabled = ?, updated_at = ? WHERE id = 1",
+        (int(enabled), datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_kis_paper_control(conn: sqlite3.Connection) -> dict:
+    ensure_kis_paper_control(conn)
+    row = conn.execute(
+        "SELECT enabled, updated_at FROM kis_paper_control WHERE id = 1"
+    ).fetchone()
+    return {"enabled": bool(row[0]), "updated_at": row[1]}
+
+
+def acquire_kis_paper_lease(
+    conn: sqlite3.Connection,
+    owner: str,
+    ttl_seconds: int,
+) -> bool:
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(seconds=max(30, ttl_seconds))).isoformat()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT owner, expires_at FROM kis_paper_lease WHERE id = 1"
+        ).fetchone()
+        if row and row[0] != owner and datetime.fromisoformat(row[1]) > now:
+            conn.rollback()
+            return False
+        conn.execute(
+            """
+            INSERT INTO kis_paper_lease (id, owner, expires_at) VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET owner = excluded.owner,
+                expires_at = excluded.expires_at
+            """,
+            (owner, expires_at),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def release_kis_paper_lease(conn: sqlite3.Connection, owner: str) -> None:
+    conn.execute("DELETE FROM kis_paper_lease WHERE id = 1 AND owner = ?", (owner,))
+    conn.commit()
+
+
+def insert_kis_paper_order(
+    conn: sqlite3.Connection,
+    *,
+    broker_order_id: str | None,
+    code: str,
+    side: str,
+    quantity: int,
+    order_type: str,
+    limit_price: float | None,
+    status: str,
+    reason: str,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO kis_paper_orders
+            (broker_order_id, code, side, quantity, order_type, limit_price,
+             status, reason, submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            broker_order_id,
+            code,
+            side,
+            quantity,
+            order_type,
+            limit_price,
+            status,
+            reason,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_kis_paper_orders(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, broker_order_id, code, side, quantity, order_type,
+               limit_price, status, reason, submitted_at, branch_code,
+               filled_quantity, remaining_quantity, avg_fill_price, reconciled_at
+        FROM kis_paper_orders ORDER BY id DESC LIMIT ?
+        """,
+        (max(1, limit),),
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "broker_order_id": row[1],
+            "code": row[2],
+            "side": row[3],
+            "quantity": row[4],
+            "order_type": row[5],
+            "limit_price": row[6],
+            "status": row[7],
+            "reason": row[8],
+            "submitted_at": row[9],
+            "branch_code": row[10],
+            "filled_quantity": row[11],
+            "remaining_quantity": row[12],
+            "avg_fill_price": row[13],
+            "reconciled_at": row[14],
+        }
+        for row in rows
+    ]
+
+
+def reconcile_kis_paper_order(conn: sqlite3.Connection, broker_order: dict) -> bool:
+    cursor = conn.execute(
+        """
+        UPDATE kis_paper_orders
+        SET branch_code = ?, status = ?, filled_quantity = ?,
+            remaining_quantity = ?, avg_fill_price = ?, reconciled_at = ?
+        WHERE broker_order_id = ?
+        """,
+        (
+            broker_order.get("branch_code"),
+            broker_order.get("status") or "unknown",
+            int(broker_order.get("filled_quantity") or 0),
+            int(broker_order.get("remaining_quantity") or 0),
+            broker_order.get("avg_fill_price"),
+            datetime.now(timezone.utc).isoformat(),
+            broker_order.get("broker_order_id"),
+        ),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def insert_kis_paper_cycle(
+    conn: sqlite3.Connection,
+    *,
+    started_at: str,
+    status: str,
+    market_open: bool,
+    market_regime: str | None,
+    target_exposure_pct: float | None,
+    decisions: list[dict],
+    blocked_decisions: list[dict],
+    broker_order_ids: list[str],
+    total_value: float | None,
+    error: str | None,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO kis_paper_cycles
+            (started_at, completed_at, status, market_open, market_regime,
+             target_exposure_pct, decisions, blocked_decisions,
+             broker_order_ids, total_value, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            started_at,
+            datetime.now(timezone.utc).isoformat(),
+            status,
+            int(market_open),
+            market_regime,
+            target_exposure_pct,
+            json.dumps(decisions, ensure_ascii=False),
+            json.dumps(blocked_decisions, ensure_ascii=False),
+            json.dumps(broker_order_ids, ensure_ascii=False),
+            total_value,
+            error,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_kis_paper_cycles(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, started_at, completed_at, status, market_open, market_regime,
+               target_exposure_pct, decisions, blocked_decisions,
+               broker_order_ids, total_value, error
+        FROM kis_paper_cycles ORDER BY id DESC LIMIT ?
+        """,
+        (max(1, limit),),
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "started_at": row[1],
+            "completed_at": row[2],
+            "status": row[3],
+            "market_open": bool(row[4]),
+            "market_regime": row[5],
+            "target_exposure_pct": row[6],
+            "decisions": json.loads(row[7]),
+            "blocked_decisions": json.loads(row[8]),
+            "broker_order_ids": json.loads(row[9]),
+            "total_value": row[10],
+            "error": row[11],
+        }
+        for row in rows
+    ]
+
+
+def insert_kis_paper_snapshot(
+    conn: sqlite3.Connection,
+    total_value: float,
+    cash: float,
+    evaluated_value: float,
+    pnl: float,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO kis_paper_snapshots (ts, total_value, cash, evaluated_value, pnl)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            datetime.now(timezone.utc).isoformat(),
+            total_value,
+            cash,
+            evaluated_value,
+            pnl,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_kis_paper_snapshots(conn: sqlite3.Connection, limit: int = 1000) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, ts, total_value, cash, evaluated_value, pnl
+        FROM kis_paper_snapshots ORDER BY id ASC LIMIT ?
+        """,
+        (max(1, limit),),
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "ts": row[1],
+            "total_value": row[2],
+            "cash": row[3],
+            "evaluated_value": row[4],
+            "pnl": row[5],
+        }
+        for row in rows
+    ]
 
 
 def create_price_alert(conn: sqlite3.Connection, code: str, direction: str, target_price: float) -> int:

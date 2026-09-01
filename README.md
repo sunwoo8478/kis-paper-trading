@@ -12,7 +12,7 @@ docs/       설계 스펙 및 구현 계획 문서
 
 ## 현재 단계: 24시간 자율 모의운용
 
-한국투자증권 계좌가 아직 없어서, 계좌 준비 전까지는 무료 데이터로 개발 중이다.
+기존 로컬 체결 시뮬레이터와 한국투자증권 대회형 모의계좌 엔진을 서로 분리해 운용한다. 두 계좌의 주문·잔고·사이클 기록은 섞이지 않는다.
 
 - **시세·시장 상태**: 네이버 증권 현재가와 장 상태를 사용하며, pykrx로 저장한 일봉은 워크포워드 검증에 사용한다.
 - **자율 운용**: 서버 프로세스는 24시간 유지하고 정규장에 5분 간격으로 후보 분석, 로컬 EXAONE 판단, 위험 검증, 모의 체결을 수행한다. 장 종료·휴장 상태에서는 주문하지 않는다.
@@ -83,13 +83,25 @@ KIS_PAPER_ACCOUNT_NUMBER=모의계좌번호_앞8자리
 KIS_PAPER_PRODUCT_CODE=01
 KIS_PAPER_BASE_URL=https://openapivts.koreainvestment.com:29443
 KIS_PAPER_ORDER_ENABLED=false
+KIS_PAPER_AUTONOMOUS_ENABLED=false
+KIS_PAPER_AUTONOMOUS_INTERVAL_SECONDS=300
+KIS_PAPER_MAX_ORDERS_PER_CYCLE=5
+KIS_PAPER_MAX_POSITION_PCT=20
+KIS_PAPER_STOP_LOSS_PCT=5
+KIS_PAPER_TAKE_PROFIT_PCT=12
+KIS_PAPER_COOLDOWN_MINUTES=60
 ```
 
 - `GET /kis/status?verify=true`: 앱 키 인증 및 연결 상태 확인
 - `GET /kis/quote/{code}`: KIS 공식 현재가 조회
 - `GET /kis/balance`: 모의계좌 잔고 조회
+- `GET /kis/broker-orders`: 당일 KIS 주문·체결·미체결 조회 및 내부 주문 대사
+- `GET /kis/orders`: 별도 저장된 KIS 주문 이력
+- `GET /kis/autonomous/status`: KIS 자동매매 상태와 최근 사이클 조회
+- `POST /kis/autonomous/start`, `/stop`, `/run`: KIS 자동매매 시작·중지·즉시 실행
+- `GET /kis/autonomous/cycles`: KIS 자동매매 사이클 이력
 
-계좌번호가 없거나 `KIS_PAPER_ORDER_ENABLED=false`이면 KIS 주문은 항상 차단된다. 먼저 조회와 잔고 대사를 검증한 후에만 주문 전송을 활성화한다.
+계좌번호가 없거나 `KIS_PAPER_ORDER_ENABLED=false`이면 KIS 주문은 항상 차단된다. `KIS_PAPER_AUTONOMOUS_ENABLED`는 엔진의 최초 상태만 정하며, 이후 시작·중지 상태는 DB에 유지된다. 엔진은 당일 미체결 주문이 하나라도 있으면 다음 분석과 신규 주문을 중단하고 체결 대사만 수행한다. 먼저 조회와 잔고 대사를 검증한 후에만 주문 전송을 활성화한다.
 
 정상 장중에는 현금 보유 목표를 0%로 두고 종목당 최대 비중 안에서 가용 현금을 전액 분산한다. 체결 단위와 거래 비용 때문에 생기는 소액 잔액만 남는다. 운용 상태와 최근 사이클은 `/agent/autonomous/status`, `/agent/autonomous/cycles`에서 확인한다. 시작·중지·즉시 분석은 각각 `/agent/autonomous/start`, `/stop`, `/run`, 저장된 일봉 워크포워드 검증은 `POST /agent/autonomous/backtest?days=60&universe=50`을 사용한다.
 
