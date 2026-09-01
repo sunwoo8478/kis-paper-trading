@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { Download, X } from "lucide-react";
 import { toast } from "sonner";
-import { ApiError, cancelOrder, getOrders } from "@/lib/api";
+import { ApiError, cancelOrder, getKisBrokerOrders, getOrders } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -12,22 +12,53 @@ import { RefreshBadge } from "@/components/refresh-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { useAccountSource } from "@/components/account-source-provider";
 
 const KRW = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 });
 
 export default function OrdersPage() {
-  const orders = useSWR("/api/orders", getOrders, { refreshInterval: 10000 });
+  const { source } = useAccountSource();
+  const isKis = source === "kis";
+  const orders = useSWR(isKis ? null : "/api/orders", getOrders, { refreshInterval: 10000 });
+  const kisOrders = useSWR(isKis ? "/api/kis/broker-orders" : null, getKisBrokerOrders, { refreshInterval: 10000 });
   const [side, setSide] = useState<"all" | "buy" | "sell">("all");
   const [query, setQuery] = useState("");
-  const allRows = useMemo(() => orders.data ?? [], [orders.data]);
+  const allRows = useMemo<DisplayOrder[]>(() => isKis
+    ? (kisOrders.data ?? []).map((order) => ({
+        id: order.broker_order_id,
+        time: formatKisOrderTime(order.order_time),
+        code: order.code,
+        name: order.name,
+        side: order.side,
+        orderType: "market",
+        quantity: order.requested_quantity,
+        filledQuantity: order.filled_quantity,
+        price: order.avg_fill_price ?? 0,
+        status: order.status,
+        cancellable: false,
+      }))
+    : (orders.data ?? []).map((order) => ({
+        id: String(order.id),
+        localId: order.id,
+        time: new Date(order.filled_at).toLocaleString("ko-KR"),
+        code: order.code,
+        name: null,
+        side: order.side,
+        orderType: order.order_type,
+        quantity: order.quantity,
+        filledQuantity: order.status === "filled" ? order.quantity : 0,
+        price: order.status === "pending" ? order.limit_price ?? order.price : order.price,
+        status: order.status,
+        cancellable: order.status === "pending",
+      })), [isKis, kisOrders.data, orders.data]);
   const rows = useMemo(
     () => allRows.filter((order) => (side === "all" || order.side === side) && order.code.includes(query.trim())),
     [allRows, query, side]
   );
   const filledRows = allRows.filter((order) => order.status === "filled");
-  const pendingCount = allRows.filter((order) => order.status === "pending").length;
-  const buyValue = filledRows.filter((order) => order.side === "buy").reduce((sum, order) => sum + order.quantity * order.price, 0);
-  const sellValue = filledRows.filter((order) => order.side === "sell").reduce((sum, order) => sum + order.quantity * order.price, 0);
+  const pendingCount = allRows.filter((order) => order.status === "pending" || order.status === "partial").length;
+  const buyValue = filledRows.filter((order) => order.side === "buy").reduce((sum, order) => sum + order.filledQuantity * order.price, 0);
+  const sellValue = filledRows.filter((order) => order.side === "sell").reduce((sum, order) => sum + order.filledQuantity * order.price, 0);
 
   const cancel = async (orderId: number) => {
     try {
@@ -45,12 +76,12 @@ export default function OrdersPage() {
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Orders</p>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">주문내역</h1>
-          <p className="max-w-2xl text-sm leading-6 text-muted-foreground">체결 흐름을 필터링하고 거래대금을 점검하거나 CSV로 보관합니다.</p>
+          <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{isKis ? "한국투자증권 모의계좌의 당일 주문과 부분 체결을 확인합니다." : "로컬 체결 흐름을 필터링하고 CSV로 보관합니다."}</p>
         </div>
         <RefreshBadge
-          hasError={Boolean(orders.error)}
-          isValidating={orders.isValidating}
-          onRefresh={() => orders.mutate()}
+          hasError={Boolean(isKis ? kisOrders.error : orders.error)}
+          isValidating={isKis ? kisOrders.isValidating : orders.isValidating}
+          onRefresh={() => isKis ? kisOrders.mutate() : orders.mutate()}
         />
       </section>
 
@@ -111,20 +142,20 @@ export default function OrdersPage() {
               ) : (
                 rows.map((order) => (
                   <TableRow key={order.id}>
-                    <TableCell>{new Date(order.filled_at).toLocaleString("ko-KR")}</TableCell>
-                    <TableCell className="font-medium text-foreground">{order.code}</TableCell>
+                    <TableCell>{order.time}</TableCell>
+                    <TableCell className="font-medium text-foreground">{order.name ?? order.code}<span className="ml-2 font-mono text-[10px] text-muted-foreground">{order.code}</span></TableCell>
                     <TableCell>
                       <Badge variant={order.side === "buy" ? "destructive" : "default"}>
                         {order.side === "buy" ? "매수" : "매도"}
                       </Badge>
                     </TableCell>
-                    <TableCell>{order.order_type === "limit" ? "지정가" : "시장가"}</TableCell>
-                    <TableCell className="text-right">{order.quantity}</TableCell>
-                    <TableCell className="text-right font-mono">{KRW.format(order.status === "pending" ? (order.limit_price ?? order.price) : order.price)}원</TableCell>
+                    <TableCell>{order.orderType === "limit" ? "지정가" : "시장가"}</TableCell>
+                    <TableCell className="text-right font-mono">{order.quantity} / {order.filledQuantity}</TableCell>
+                    <TableCell className="text-right font-mono">{order.price ? `${KRW.format(order.price)}원` : "-"}</TableCell>
                     <TableCell>{statusLabel(order.status)}</TableCell>
                     <TableCell className="text-right">
-                      {order.status === "pending" && (
-                        <Button variant="ghost" size="icon-sm" onClick={() => cancel(order.id)} aria-label="대기주문 취소">
+                      {order.cancellable && order.localId !== undefined && (
+                        <Button variant="ghost" size="icon-sm" onClick={() => cancel(order.localId!)} aria-label="대기주문 취소">
                           <X className="h-3.5 w-3.5" />
                         </Button>
                       )}
@@ -157,9 +188,13 @@ function formatCompactPrice(value: number) {
   return `${new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 }).format(value)}원`;
 }
 
-function exportOrders(rows: Awaited<ReturnType<typeof getOrders>>) {
-  const header = ["id", "filled_at", "code", "side", "order_type", "quantity", "price", "limit_price", "status"];
-  const csv = [header.join(","), ...rows.map((order) => [order.id, order.filled_at, order.code, order.side, order.order_type, order.quantity, order.price, order.limit_price ?? "", order.status].join(","))].join("\n");
+type DisplayOrder = { id: string; localId?: number; time: string; code: string; name: string | null; side: "buy" | "sell"; orderType: "market" | "limit"; quantity: number; filledQuantity: number; price: number; status: string; cancellable: boolean };
+
+function formatKisOrderTime(value: string) { return value.length === 6 ? `${value.slice(0, 2)}:${value.slice(2, 4)}:${value.slice(4, 6)}` : value || "-"; }
+
+function exportOrders(rows: DisplayOrder[]) {
+  const header = ["id", "time", "code", "name", "side", "order_type", "quantity", "filled_quantity", "price", "status"];
+  const csv = [header.join(","), ...rows.map((order) => [order.id, order.time, order.code, order.name ?? "", order.side, order.orderType, order.quantity, order.filledQuantity, order.price, order.status].join(","))].join("\n");
   const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;

@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
 import useSWR from "swr";
 import { Bell, ChevronRight, ListOrdered, Radar, ShieldCheck } from "lucide-react";
 import { getAgentCandidates, getKisAutonomousStatus, getKisBalance, getKisBrokerOrders, getKisPortfolioHistory, getOrders, getPortfolio, getPortfolioHistory, getPortfolioRisk, getPriceAlerts, getWatchlist } from "@/lib/api";
@@ -13,12 +12,13 @@ import { EquityChart } from "@/components/equity-chart";
 import { AiOperationsPanel } from "@/components/ai-operations-panel";
 import { MarketWorkbench } from "@/components/market-workbench";
 import { MarketNewsPanel } from "@/components/market-news-panel";
+import { useAccountSource } from "@/components/account-source-provider";
 
 const KRW = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 });
 const EMBEDDED_CARD = "h-full min-w-0 gap-0 rounded-none border-0 py-0 shadow-none ring-0";
 
 export default function DashboardPage() {
-  const [accountSource, setAccountSource] = useState<"kis" | "local">("kis");
+  const { source: accountSource, setSource: setAccountSource } = useAccountSource();
   const isKis = accountSource === "kis";
   const portfolio = useSWR(isKis ? null : "/api/portfolio", getPortfolio, { refreshInterval: 10000 });
   const history = useSWR(isKis ? null : "/api/portfolio/history", getPortfolioHistory, { refreshInterval: 10000 });

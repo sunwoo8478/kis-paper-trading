@@ -3,14 +3,43 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
-import { getPortfolioRisk } from "@/lib/api";
+import { getKisBalance, getKisPortfolioHistory, getPortfolioRisk } from "@/lib/api";
 import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { RefreshBadge } from "@/components/refresh-badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useAccountSource } from "@/components/account-source-provider";
 
 export default function RiskPage() {
-  const risk = useSWR("/api/portfolio/risk", getPortfolioRisk, { refreshInterval: 10000 });
-  const data = risk.data;
+  const { source } = useAccountSource();
+  const isKis = source === "kis";
+  const risk = useSWR(isKis ? null : "/api/portfolio/risk", getPortfolioRisk, { refreshInterval: 10000 });
+  const kisBalance = useSWR(isKis ? "/api/kis/balance" : null, getKisBalance, { refreshInterval: 10000 });
+  const kisHistory = useSWR(isKis ? "/api/kis/history" : null, getKisPortfolioHistory, { refreshInterval: 10000 });
+  const balance = kisBalance.data;
+  const initialCapital = balance ? balance.total_value - balance.pnl : 0;
+  const kisPositions = (balance?.positions ?? []).map((position) => ({
+    ...position,
+    cost_basis: position.avg_price * position.quantity,
+    unrealized_pnl: position.pnl,
+    weight_pct: balance?.total_value ? position.market_value / balance.total_value * 100 : 0,
+  }));
+  const maxPositionWeight = kisPositions.reduce((max, position) => Math.max(max, position.weight_pct), 0);
+  const weights = kisPositions.map((position) => position.weight_pct / 100);
+  const kisDrawdown = maxDrawdownPct((kisHistory.data ?? []).map((snapshot) => snapshot.total_value));
+  const data = isKis && balance ? {
+    total_value: balance.total_value,
+    total_return_pct: initialCapital ? balance.pnl / initialCapital * 100 : 0,
+    invested_ratio_pct: balance.total_value ? balance.evaluated_value / balance.total_value * 100 : 0,
+    cash_ratio_pct: balance.total_value ? balance.cash / balance.total_value * 100 : 0,
+    max_position_weight_pct: maxPositionWeight,
+    max_drawdown_pct: kisDrawdown,
+    concentration_hhi: weights.reduce((sum, weight) => sum + weight * weight, 0),
+    unrealized_pnl: balance.pnl,
+    initial_capital: initialCapital,
+    evaluated_value: balance.evaluated_value,
+    positions: kisPositions,
+    risk_flags: kisPositions.filter((position) => position.weight_pct > 20).map((position) => ({ level: "warning" as const, code: position.code, message: `${position.name} 비중이 20%를 초과했습니다.` })),
+  } : risk.data;
 
   return (
     <div className="space-y-6">
@@ -18,9 +47,9 @@ export default function RiskPage() {
         <div>
           <p className="text-xs text-muted-foreground">Portfolio risk</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">계좌 리스크 워크스페이스</h1>
-          <p className="mt-2 text-sm text-muted-foreground">노출, 집중도, 낙폭과 종목별 손익 기여도를 점검합니다.</p>
+          <p className="mt-2 text-sm text-muted-foreground">{isKis ? `KIS 모의계좌 ${balance?.account_masked ?? "연결 확인 중"}` : "로컬 시뮬레이터"}의 노출, 집중도와 손익을 점검합니다.</p>
         </div>
-        <RefreshBadge hasError={Boolean(risk.error)} isValidating={risk.isValidating} onRefresh={() => risk.mutate()} />
+        <RefreshBadge hasError={Boolean(isKis ? kisBalance.error || kisHistory.error : risk.error)} isValidating={isKis ? kisBalance.isValidating || kisHistory.isValidating : risk.isValidating} onRefresh={() => isKis ? Promise.all([kisBalance.mutate(), kisHistory.mutate()]) : risk.mutate()} />
       </header>
 
       <section className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-3 xl:grid-cols-6">
@@ -58,7 +87,7 @@ export default function RiskPage() {
                 ) : (
                   data?.positions.map((position) => (
                     <TableRow key={position.code}>
-                      <TableCell><Link href={`/stocks/${position.code}`} className="font-mono font-medium hover:underline">{position.code}</Link></TableCell>
+                      <TableCell><Link href={`/stocks/${position.code}`} className="font-medium hover:underline">{"name" in position ? position.name : position.code}<span className="ml-2 font-mono text-[10px] text-muted-foreground">{position.code}</span></Link></TableCell>
                       <TableCell className="text-right font-mono">{position.quantity}</TableCell>
                       <TableCell className="text-right font-mono">{formatPrice(position.avg_price)}</TableCell>
                       <TableCell className="text-right font-mono">{formatPrice(position.current_price)}</TableCell>
@@ -116,4 +145,14 @@ function RiskMetric({ label, value, tone }: { label: string; value: string; tone
 
 function Diagnostic({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return <div className="flex items-center justify-between gap-4"><span className="text-muted-foreground">{label}</span><span className={`font-mono ${tone ?? ""}`}>{value}</span></div>;
+}
+
+function maxDrawdownPct(values: number[]) {
+  let peak = 0;
+  let maxDrawdown = 0;
+  for (const value of values) {
+    peak = Math.max(peak, value);
+    if (peak > 0) maxDrawdown = Math.min(maxDrawdown, (value - peak) / peak * 100);
+  }
+  return maxDrawdown;
 }
