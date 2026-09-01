@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 
 from app import repository
+from app.market_data.base import OhlcvBar, Stock
 
 
 @pytest.fixture
@@ -156,6 +157,24 @@ def test_upsert_and_get_price_history(conn):
     assert history == [
         {"date": "2026-08-27", "open": 70000, "high": 71000, "low": 69500, "close": 70500, "volume": 1_000_000}
     ]
+
+
+def test_get_average_volume_averages_recent_bars(conn):
+    repository.upsert_stocks(conn, [Stock("005930", "삼성전자", "KOSPI")])
+    bars = [
+        OhlcvBar(date=f"2026-06-{i + 1:02d}", open=100, high=110, low=90, close=100, volume=1000 + i * 10)
+        for i in range(30)
+    ]
+    repository.upsert_price_history(conn, "005930", bars)
+
+    average = repository.get_average_volume(conn, "005930", days=20)
+
+    expected_bars = bars[-20:]
+    assert average == sum(bar.volume for bar in expected_bars) / 20
+
+
+def test_get_average_volume_returns_none_when_no_history(conn):
+    assert repository.get_average_volume(conn, "999999") is None
 
 
 def test_watchlist_add_remove_and_list(conn):
