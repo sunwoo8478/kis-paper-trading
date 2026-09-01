@@ -143,6 +143,31 @@ def test_balance_maps_positions_and_summary():
     assert session.calls[1][2]["headers"]["tr_id"] == "VTTC8434R"
 
 
+def test_buying_power_maps_cash_without_margin():
+    session = _Session([
+        _Response({"access_token": "token", "expires_in": 3600}),
+        _Response({
+            "rt_cd": "0",
+            "output": {
+                "ord_psbl_cash": "3200000",
+                "nrcvb_buy_amt": "3100000",
+                "nrcvb_buy_qty": "11",
+                "max_buy_amt": "3300000",
+                "max_buy_qty": "12",
+            },
+        }),
+    ])
+    client = KisPaperClient(_config(), session)
+
+    buying_power = client.get_buying_power("005930", 260000)
+
+    assert buying_power["orderable_cash"] == 3_200_000
+    assert buying_power["cash_only_buying_power"] == 3_100_000
+    assert buying_power["cash_only_quantity"] == 11
+    assert session.calls[1][2]["headers"]["tr_id"] == "VTTC8908R"
+    assert session.calls[1][2]["params"]["ORD_DVSN"] == "01"
+
+
 def test_order_is_locked_until_explicitly_enabled():
     client = KisPaperClient(_config(order_enabled=False))
 

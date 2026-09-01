@@ -64,6 +64,7 @@ class KisPaperClient:
     BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
     ORDER_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
     DAILY_ORDERS_PATH = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
+    BUYING_POWER_PATH = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
 
     def __init__(
         self,
@@ -201,6 +202,40 @@ class KisPaperClient:
             "purchase_value": self._number(summary.get("pchs_amt_smtl_amt")),
             "evaluated_value": self._number(summary.get("scts_evlu_amt")),
             "pnl": self._number(summary.get("evlu_pfls_smtl_amt")),
+            "source": "kis-paper",
+        }
+
+    def get_buying_power(self, code: str = "005930", price: float | None = None) -> dict[str, Any]:
+        self._require_account()
+        if not code or not code.isalnum() or len(code) not in {6, 7}:
+            raise ValueError("종목코드는 6~7자리여야 합니다")
+        if price is None:
+            price = self.get_quote(code).get("price")
+        if price is None or price <= 0:
+            raise ValueError("주문 가능 조회를 위한 기준 가격이 필요합니다")
+        payload = self._request(
+            "GET",
+            self.BUYING_POWER_PATH,
+            "VTTC8908R",
+            params={
+                "CANO": self.config.account_number,
+                "ACNT_PRDT_CD": self.config.product_code,
+                "PDNO": code,
+                "ORD_UNPR": str(int(price)),
+                "ORD_DVSN": "01",
+                "CMA_EVLU_AMT_ICLD_YN": "N",
+                "OVRS_ICLD_YN": "N",
+            },
+        )
+        output = payload.get("output") or {}
+        return {
+            "code": code,
+            "reference_price": price,
+            "orderable_cash": self._number(output.get("ord_psbl_cash")),
+            "cash_only_buying_power": self._number(output.get("nrcvb_buy_amt")),
+            "cash_only_quantity": int(self._number(output.get("nrcvb_buy_qty")) or 0),
+            "max_buying_power": self._number(output.get("max_buy_amt")),
+            "max_quantity": int(self._number(output.get("max_buy_qty")) or 0),
             "source": "kis-paper",
         }
 

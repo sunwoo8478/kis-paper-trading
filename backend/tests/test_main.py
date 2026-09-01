@@ -4,7 +4,8 @@ from app.main import app
 from app.market_data.pykrx_provider import PykrxProvider
 
 
-def test_health_check_returns_ok():
+def test_health_check_returns_ok(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "health.db"))
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200

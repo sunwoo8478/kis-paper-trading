@@ -27,6 +27,21 @@ def kis_balance(request: Request):
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.get("/kis/buying-power")
+def kis_buying_power(
+    request: Request,
+    code: str = Query(default="005930"),
+    price: float | None = Query(default=None),
+):
+    try:
+        return request.app.state.kis_client.get_buying_power(
+            code.strip().upper(),
+            price,
+        )
+    except (KisApiError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/kis/autonomous/status")
 def kis_autonomous_status(request: Request):
     return request.app.state.kis_autonomous_engine.status()
