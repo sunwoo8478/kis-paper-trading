@@ -317,6 +317,40 @@ def _direct_factual_answer(conn, risk: dict, prompt: str, engine_status: dict) -
                 f"조회 시각: {queried_at}"
             )
 
+    if any(marker in normalized for marker in ("안샀", "아무것도안했", "왜관망", "매수안한이유")):
+        cycle = engine_status.get("latest_cycle") or {}
+        blocked_buys = [
+            item for item in (cycle.get("blocked_decisions") or [])
+            if item.get("action") == "buy"
+        ]
+        regime = cycle.get("market_regime") or "확인 불가"
+        target_exposure = cycle.get("target_exposure_pct")
+        target_exposure_text = f"{target_exposure:.1f}%" if target_exposure is not None else "확인 불가"
+        if not blocked_buys:
+            return (
+                f"최근 자율운용 사이클(#{cycle.get('id', '없음')})에서 차단된 매수 판단이 없습니다. "
+                f"시장 국면은 {regime}, 목표 투자비중은 {target_exposure_text}입니다.\n조회 시각: {queried_at}"
+            )
+        reasons = "; ".join(
+            f"{item.get('code') or '전체'} - {item.get('reason', '사유 없음')}"
+            for item in blocked_buys
+        )
+        return (
+            f"최근 자율운용 사이클(#{cycle.get('id', '없음')})은 시장 국면 {regime}, "
+            f"목표 투자비중 {target_exposure_text} 기준으로 다음 매수를 차단했습니다: {reasons}\n"
+            f"조회 시각: {queried_at}"
+        )
+
+    if any(marker in normalized for marker in ("현재장세", "시장국면", "목표비중", "목표투자비중")):
+        cycle = engine_status.get("latest_cycle") or {}
+        regime = cycle.get("market_regime") or "확인 불가"
+        target_exposure = cycle.get("target_exposure_pct")
+        target_exposure_text = f"{target_exposure:.1f}%" if target_exposure is not None else "확인 불가"
+        return (
+            f"현재 시장 국면은 {regime}이며 목표 투자비중은 {target_exposure_text}입니다.\n"
+            f"조회 시각: {queried_at}"
+        )
+
     if any(marker in normalized for marker in ("ai상태", "운용상태", "엔진상태", "뭐하고", "작동중", "가동중")):
         cycle = engine_status.get("latest_cycle") or {}
         return (

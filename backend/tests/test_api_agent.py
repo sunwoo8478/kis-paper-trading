@@ -377,3 +377,70 @@ def test_autonomous_backtest_compare_returns_multi_period_verdicts(tmp_path, mon
     body = response.json()
     assert [period["period_days"] for period in body["periods"]] == [60, 120, 252]
     assert body["overall_verdict"] in {"pass", "warn", "fail"}
+
+
+def test_agent_chat_explains_blocked_buy_from_latest_cycle(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "blocked-facts.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+    monkeypatch.setattr(
+        "app.api.agent.ask_local_model",
+        lambda *args: (_ for _ in ()).throw(AssertionError("facts must bypass model")),
+    )
+
+    with TestClient(app) as client:
+        repository.insert_autonomous_cycle(
+            app.state.conn,
+            started_at="2026-09-01T00:00:00+00:00",
+            status="observed",
+            market_open=True,
+            decisions="[]",
+            order_ids="[]",
+            total_value=1_000_000,
+            error=None,
+            market_regime="bearish",
+            target_exposure_pct=20.0,
+            blocked_decisions=json.dumps([
+                {"code": "005930", "action": "buy", "rule": "bearish_regime", "reason": "하락장으로 분류되어 신규 매수 중단"}
+            ], ensure_ascii=False),
+        )
+        response = client.post("/agent/chat", json={"prompt": "오늘 왜 아무것도 안 샀어?", "scope": "dashboard"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "bearish_regime" not in body["answer"]
+    assert "하락장" in body["answer"]
+    assert "20" in body["answer"]
+
+
+def test_agent_chat_explains_market_regime_and_target_exposure(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "regime-facts.db"))
+    monkeypatch.setenv("AI_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(PykrxProvider, "get_latest_price", lambda self, code: 1000.0)
+    monkeypatch.setattr(
+        "app.api.agent.ask_local_model",
+        lambda *args: (_ for _ in ()).throw(AssertionError("facts must bypass model")),
+    )
+
+    with TestClient(app) as client:
+        repository.insert_autonomous_cycle(
+            app.state.conn,
+            started_at="2026-09-01T00:00:00+00:00",
+            status="observed",
+            market_open=True,
+            decisions="[]",
+            order_ids="[]",
+            total_value=1_000_000,
+            error=None,
+            market_regime="neutral",
+            target_exposure_pct=80.0,
+            blocked_decisions="[]",
+        )
+        response = client.post("/agent/chat", json={"prompt": "현재 장세와 목표 투자비중 알려줘", "scope": "dashboard"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "neutral" in body["answer"]
+    assert "80" in body["answer"]
