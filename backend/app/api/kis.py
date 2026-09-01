@@ -68,6 +68,14 @@ def kis_orders(request: Request, limit: int = Query(default=100)):
     )
 
 
+@router.get("/kis/history")
+def kis_history(request: Request, limit: int = Query(default=1000)):
+    return repository.get_kis_paper_snapshots(
+        request.app.state.conn,
+        max(1, min(limit, 5000)),
+    )
+
+
 @router.get("/kis/broker-orders")
 def kis_broker_orders(request: Request):
     try:

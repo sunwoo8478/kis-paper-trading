@@ -24,3 +24,13 @@ def test_lifespan_wires_conn_provider_executor(tmp_path, monkeypatch):
         assert client.app.state.executor is not None
         response = client.get("/health")
         assert response.status_code == 200
+
+
+def test_kis_history_uses_separate_snapshots(tmp_path, monkeypatch):
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
+
+    with TestClient(app) as client:
+        response = client.get("/kis/history")
+
+    assert response.status_code == 200
+    assert response.json() == []

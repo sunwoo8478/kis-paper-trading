@@ -5,8 +5,8 @@
 ## 구조
 
 ```
-backend/    FastAPI + SQLite (완료, main에 병합됨)
-frontend/   Next.js + shadcn/ui (worktree-frontend-dashboard 브랜치, 아직 main 미병합)
+backend/    FastAPI + SQLite
+frontend/   Next.js + shadcn/ui
 docs/       설계 스펙 및 구현 계획 문서
 ```
 
@@ -95,6 +95,7 @@ KIS_PAPER_COOLDOWN_MINUTES=60
 - `GET /kis/status?verify=true`: 앱 키 인증 및 연결 상태 확인
 - `GET /kis/quote/{code}`: KIS 공식 현재가 조회
 - `GET /kis/balance`: 모의계좌 잔고 조회
+- `GET /kis/history`: KIS 전용 자산 스냅샷 조회
 - `GET /kis/broker-orders`: 당일 KIS 주문·체결·미체결 조회 및 내부 주문 대사
 - `GET /kis/orders`: 별도 저장된 KIS 주문 이력
 - `GET /kis/autonomous/status`: KIS 자동매매 상태와 최근 사이클 조회
@@ -115,7 +116,7 @@ uv run pytest tests/ -v
 
 ## 프론트엔드 실행
 
-현재 `worktree-frontend-dashboard` 브랜치에 있다 (`git checkout worktree-frontend-dashboard`, 또는 main 병합 후).
+프론트엔드는 `main` 브랜치의 `frontend/`에 포함되어 있다. 대시보드 기본 계좌는 KIS 모의계좌이며, 화면 상단에서 기존 로컬 시뮬레이터로 전환할 수 있다.
 
 ```bash
 cd frontend
