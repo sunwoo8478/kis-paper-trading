@@ -7,3 +7,4 @@ node_modules/
 .next/
 .env
 .env.*
+.kis-paper-token.json

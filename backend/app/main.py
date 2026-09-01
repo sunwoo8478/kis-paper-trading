@@ -5,9 +5,10 @@ from fastapi import FastAPI
 
 from . import repository
 from .ai.autonomous import AutonomousTradingEngine
-from .api import agent, alerts, analytics, journal, market, news, orders, portfolio, stocks, watchlist
+from .api import agent, alerts, analytics, journal, kis, market, news, orders, portfolio, stocks, watchlist
 from .config import load_settings
 from .execution.simulated_executor import SimulatedExecutor
+from .integrations.kis import KisPaperClient
 from .market_data.naver_provider import NaverRealtimeProvider
 from .market_data.pykrx_provider import PykrxProvider
 
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     app.state.conn = conn
     app.state.provider = provider
     app.state.executor = executor
+    app.state.kis_client = KisPaperClient()
     autonomous_engine = AutonomousTradingEngine(settings.db_path, provider)
     app.state.autonomous_engine = autonomous_engine
     autonomous_engine.start()
@@ -46,6 +48,7 @@ app.include_router(agent.router)
 app.include_router(alerts.router)
 app.include_router(analytics.router)
 app.include_router(journal.router)
+app.include_router(kis.router)
 app.include_router(market.router)
 app.include_router(news.router)
 app.include_router(orders.router)
@@ -58,9 +61,16 @@ app.include_router(watchlist.router)
 def health() -> dict:
     engine = app.state.autonomous_engine
     runtime = engine.status()
+    kis_status = app.state.kis_client.status()
     return {
         "status": "degraded" if runtime["last_error"] else "ok",
         "database": "connected",
+        "kis_paper": {
+            "configured": kis_status["configured"],
+            "authenticated": kis_status["authenticated"],
+            "account_configured": kis_status["account_configured"],
+            "order_enabled": kis_status["order_enabled"],
+        },
         "autonomous": {
             "enabled": runtime["enabled"],
             "running": runtime["running"],

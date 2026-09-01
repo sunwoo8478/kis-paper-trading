@@ -72,6 +72,25 @@ SIMULATED_COMMISSION_BPS=1.5
 SIMULATED_SELL_TAX_BPS=15
 ```
 
+### 한국투자증권 대회형 모의투자 연결
+
+기존 로컬 시뮬레이션 계좌는 그대로 유지하며 KIS 모의투자 계좌를 별도 어댑터로 연결할 수 있다.
+
+```env
+KIS_PAPER_APP_KEY=모의투자_앱키
+KIS_PAPER_APP_SECRET=모의투자_앱시크릿
+KIS_PAPER_ACCOUNT_NUMBER=모의계좌번호_앞8자리
+KIS_PAPER_PRODUCT_CODE=01
+KIS_PAPER_BASE_URL=https://openapivts.koreainvestment.com:29443
+KIS_PAPER_ORDER_ENABLED=false
+```
+
+- `GET /kis/status?verify=true`: 앱 키 인증 및 연결 상태 확인
+- `GET /kis/quote/{code}`: KIS 공식 현재가 조회
+- `GET /kis/balance`: 모의계좌 잔고 조회
+
+계좌번호가 없거나 `KIS_PAPER_ORDER_ENABLED=false`이면 KIS 주문은 항상 차단된다. 먼저 조회와 잔고 대사를 검증한 후에만 주문 전송을 활성화한다.
+
 정상 장중에는 현금 보유 목표를 0%로 두고 종목당 최대 비중 안에서 가용 현금을 전액 분산한다. 체결 단위와 거래 비용 때문에 생기는 소액 잔액만 남는다. 운용 상태와 최근 사이클은 `/agent/autonomous/status`, `/agent/autonomous/cycles`에서 확인한다. 시작·중지·즉시 분석은 각각 `/agent/autonomous/start`, `/stop`, `/run`, 저장된 일봉 워크포워드 검증은 `POST /agent/autonomous/backtest?days=60&universe=50`을 사용한다.
 
 AI 전용 성과 실험은 `POST /agent/experiment/start`로 기존 상태를 내부 보관한 뒤 새 초기자본에서 시작하고, `GET /agent/experiment`에서 실험 수익률·최대 낙폭·KOSPI 대비 초과수익을 확인한다. 현재 macOS 환경에서는 `ops/com.kis-paper-trading.backend.plist`가 LaunchAgent로 등록되어 로그인 후 자동 시작, 장애 시 재시작, 운용 중 유휴 절전 방지를 담당한다. 상태는 `/health`와 `launchctl print gui/501/com.kis-paper-trading.backend`로 확인한다.

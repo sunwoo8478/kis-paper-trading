@@ -5,12 +5,13 @@ from app.market_data.pykrx_provider import PykrxProvider
 
 
 def test_health_check_returns_ok():
-    client = TestClient(app)
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
-    assert response.json()["database"] == "connected"
-    assert "autonomous" in response.json()
+    with TestClient(app) as client:
+        response = client.get("/health")
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        assert response.json()["database"] == "connected"
+        assert "autonomous" in response.json()
+        assert "kis_paper" in response.json()
 
 
 def test_lifespan_wires_conn_provider_executor(tmp_path, monkeypatch):
