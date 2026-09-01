@@ -74,6 +74,17 @@ export type KisBalance = {
   source: "kis-paper";
 };
 
+export type KisBuyingPower = {
+  code: string;
+  reference_price: number;
+  orderable_cash: number | null;
+  cash_only_buying_power: number | null;
+  cash_only_quantity: number;
+  max_buying_power: number | null;
+  max_quantity: number;
+  source: "kis-paper";
+};
+
 export type KisBrokerOrder = {
   broker_order_id: string;
   branch_code: string;
@@ -409,18 +420,7 @@ export async function getKisBalance(): Promise<KisBalance> {
   return fetcher<KisBalance>("/api/kis/balance");
 }
 
-export type KisBuyingPower = {
-  code: string;
-  reference_price: number;
-  orderable_cash: number;
-  cash_only_buying_power: number;
-  cash_only_quantity: number;
-  max_buying_power: number;
-  max_quantity: number;
-  source: "kis-paper";
-};
-
-export async function getKisBuyingPower(code: string): Promise<KisBuyingPower> {
+export async function getKisBuyingPower(code = "005930"): Promise<KisBuyingPower> {
   return fetcher<KisBuyingPower>(`/api/kis/buying-power?code=${encodeURIComponent(code)}`);
 }
 

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { Bell, ChevronRight, ListOrdered, Radar, ShieldCheck } from "lucide-react";
-import { getAgentCandidates, getKisAutonomousStatus, getKisBalance, getKisBrokerOrders, getKisPortfolioHistory, getOrders, getPortfolio, getPortfolioHistory, getPortfolioRisk, getPriceAlerts, getWatchlist } from "@/lib/api";
+import { getAgentCandidates, getKisAutonomousStatus, getKisBalance, getKisBrokerOrders, getKisBuyingPower, getKisPortfolioHistory, getOrders, getPortfolio, getPortfolioHistory, getPortfolioRisk, getPriceAlerts, getWatchlist } from "@/lib/api";
 import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,6 +23,7 @@ export default function DashboardPage() {
   const portfolio = useSWR(isKis ? null : "/api/portfolio", getPortfolio, { refreshInterval: 10000 });
   const history = useSWR(isKis ? null : "/api/portfolio/history", getPortfolioHistory, { refreshInterval: 10000 });
   const kisBalance = useSWR(isKis ? "/api/kis/balance" : null, getKisBalance, { refreshInterval: 10000 });
+  const kisBuyingPower = useSWR(isKis ? "/api/kis/buying-power" : null, getKisBuyingPower, { refreshInterval: 10000 });
   const kisHistory = useSWR(isKis ? "/api/kis/history" : null, getKisPortfolioHistory, { refreshInterval: 10000 });
   const kisOrders = useSWR(isKis ? "/api/kis/broker-orders" : null, getKisBrokerOrders, { refreshInterval: 10000 });
   const kisEngine = useSWR(isKis ? "/api/kis/autonomous/status" : null, getKisAutonomousStatus, { refreshInterval: 5000 });
@@ -32,7 +33,7 @@ export default function DashboardPage() {
   const risk = useSWR(isKis ? null : "/api/portfolio/risk", getPortfolioRisk, { refreshInterval: 10000 });
   const alerts = useSWR("/api/alerts", () => getPriceAlerts(), { refreshInterval: 15000 });
 
-  const refresh = () => { portfolio.mutate(); history.mutate(); kisBalance.mutate(); kisHistory.mutate(); kisOrders.mutate(); kisEngine.mutate(); watchlist.mutate(); orders.mutate(); candidates.mutate(); risk.mutate(); alerts.mutate(); };
+  const refresh = () => { portfolio.mutate(); history.mutate(); kisBalance.mutate(); kisBuyingPower.mutate(); kisHistory.mutate(); kisOrders.mutate(); kisEngine.mutate(); watchlist.mutate(); orders.mutate(); candidates.mutate(); risk.mutate(); alerts.mutate(); };
   const totalValue = isKis ? kisBalance.data?.total_value : portfolio.data?.total_value;
   const cash = isKis ? kisBalance.data?.cash : portfolio.data?.cash;
   const pnl = isKis ? kisBalance.data?.pnl : portfolio.data?.unrealized_pnl;
@@ -67,11 +68,17 @@ export default function DashboardPage() {
   const pendingOrders = isKis
     ? (kisOrders.data ?? []).filter((order) => order.remaining_quantity > 0).length
     : (orders.data ?? []).filter((order) => order.status === "pending").length;
+  const reservedCash = isKis
+    ? (kisOrders.data ?? []).reduce((sum, order) => sum + order.remaining_quantity * (order.avg_fill_price ?? 0), 0)
+    : 0;
+  const orderableCash = isKis
+    ? kisBuyingPower.data?.cash_only_buying_power ?? kisBuyingPower.data?.orderable_cash
+    : cash;
   const activeAlerts = (alerts.data ?? []).filter((alert) => alert.active).length;
   const chartData = (isKis ? kisHistory.data : history.data)?.map((snapshot) => ({ time: snapshot.ts, value: snapshot.total_value })) ?? [];
   const maxPositionWeight = positions.reduce((max, position) => Math.max(max, position.weight_pct), 0);
-  const dataError = isKis ? kisBalance.error || kisOrders.error || kisEngine.error : portfolio.error || risk.error;
-  const validating = isKis ? kisBalance.isValidating || kisOrders.isValidating : portfolio.isValidating || risk.isValidating;
+  const dataError = isKis ? kisBalance.error || kisBuyingPower.error || kisOrders.error || kisEngine.error : portfolio.error || risk.error;
+  const validating = isKis ? kisBalance.isValidating || kisBuyingPower.isValidating || kisOrders.isValidating : portfolio.isValidating || risk.isValidating;
 
   return (
     <div className="w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-border bg-card shadow-sm">
@@ -90,11 +97,11 @@ export default function DashboardPage() {
         </header>
         <div className="grid grid-cols-2 sm:grid-cols-3 xl:col-span-8 xl:grid-cols-6">
           <Metric label="총자산" value={formatPrice(totalValue ?? null)} />
-          <Metric label="가용 현금" value={formatPrice(cash ?? null)} />
-          <Metric label="평가손익" value={formatPrice(pnl ?? null)} tone={changeColorClass(pnl ?? null)} />
-          <Metric label={isKis ? "평가 수익률" : "누적 수익률"} value={formatChangePct(totalReturnPct ?? null)} tone={changeColorClass(totalReturnPct ?? null)} />
+          <Metric label={isKis ? "예수금" : "가용 현금"} value={formatPrice(cash ?? null)} />
+          <Metric label={isKis ? "미체결 예약" : "평가손익"} value={formatPrice(isKis ? reservedCash : pnl ?? null)} tone={isKis ? "text-amber-600 dark:text-amber-400" : changeColorClass(pnl ?? null)} />
+          <Metric label={isKis ? "실제 주문 가능" : "누적 수익률"} value={isKis ? formatPrice(orderableCash ?? null) : formatChangePct(totalReturnPct ?? null)} tone={isKis ? "text-emerald-600 dark:text-emerald-400" : changeColorClass(totalReturnPct ?? null)} />
           <Metric label="투자 비중" value={investedRatioPct === undefined ? "-" : `${investedRatioPct.toFixed(1)}%`} />
-          <Metric label="최대 집중도" value={positions.length ? `${maxPositionWeight.toFixed(1)}%` : "-"} />
+          <Metric label={isKis ? "평가손익" : "최대 집중도"} value={isKis ? formatPrice(pnl ?? null) : positions.length ? `${maxPositionWeight.toFixed(1)}%` : "-"} tone={isKis ? changeColorClass(pnl ?? null) : undefined} />
         </div>
       </section>
 
