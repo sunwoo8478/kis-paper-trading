@@ -378,3 +378,64 @@ def test_guard_skips_open_order_stock_and_uses_other_candidate(tmp_path):
     assert [item["code"] for item in decisions] == ["000660"]
     assert any(item["code"] == "005930" for item in blocked)
     conn.close()
+
+
+def test_rank_candidates_excludes_recent_nontradable_symbol_and_uses_configured_pool(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = str(tmp_path / "candidate-pool.db")
+    _seed(db_path)
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    candidates = [
+        {
+            "code": f"{index:06d}",
+            "name": f"후보{index}",
+            "market": "KOSPI",
+            "last_price": 1000,
+            "prev_close": 990,
+            "change_pct": 1.0,
+            "volume": 100_000,
+        }
+        for index in range(20)
+    ]
+    candidates[0]["code"] = "368600"
+    repository.insert_kis_paper_cycle(
+        conn,
+        started_at=datetime.now().isoformat(),
+        status="observed",
+        market_open=True,
+        market_regime="bullish",
+        target_exposure_pct=100,
+        decisions=[{
+            "code": "368600",
+            "action": "buy",
+            "quantity": 1,
+            "execution_error": "KIS API 오류 [40070000]: 매매불가 종목",
+        }],
+        blocked_decisions=[],
+        broker_order_ids=[],
+        total_value=500_000_000,
+        error=None,
+    )
+    monkeypatch.setenv("KIS_PAPER_CANDIDATE_POOL_SIZE", "15")
+    monkeypatch.setattr(
+        repository,
+        "get_candidates",
+        lambda conn, top_change, top_volume: candidates,
+    )
+    monkeypatch.setattr(repository, "get_price_history", lambda conn, code: [])
+    monkeypatch.setattr(
+        "app.ai.kis_autonomous.calculate_stock_analytics",
+        lambda history: {
+            "technical_bias": {"score": 50},
+            "momentum": {"rsi14": 55, "macd_histogram": 1},
+        },
+    )
+
+    ranked = engine._rank_candidates(conn)
+
+    assert len(ranked) == 15
+    assert "368600" not in {item["code"] for item in ranked}
+    conn.close()

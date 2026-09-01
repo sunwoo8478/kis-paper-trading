@@ -106,6 +106,9 @@ KIS_PAPER_ORDER_ENABLED=false
 KIS_PAPER_AUTONOMOUS_ENABLED=false
 KIS_PAPER_AUTONOMOUS_INTERVAL_SECONDS=300
 KIS_PAPER_MAX_ORDERS_PER_CYCLE=10
+KIS_PAPER_CANDIDATE_POOL_SIZE=30
+KIS_PAPER_REJECTED_SYMBOL_LOOKBACK=50
+KIS_PAPER_EXCLUDED_CODES=
 KIS_PAPER_MAX_POSITION_PCT=20
 KIS_PAPER_STOP_LOSS_PCT=5
 KIS_PAPER_TAKE_PROFIT_PCT=12
@@ -127,7 +130,7 @@ KIS_PAPER_ROTATION_SELL_SCORE=-1000
 
 계좌번호가 없거나 `KIS_PAPER_ORDER_ENABLED=false`이면 KIS 주문은 항상 차단된다. `KIS_PAPER_AUTONOMOUS_ENABLED`는 엔진의 최초 상태만 정하며, 이후 시작·중지 상태는 DB에 유지된다. 엔진은 당일 미체결 주문이 있으면 해당 종목의 중복 주문만 막고, KIS 실시간 주문가능금액 범위에서 다른 후보의 주문은 계속한다. 먼저 조회와 잔고 대사를 검증한 후에만 주문 전송을 활성화한다.
 
-`KIS_PAPER_MAX_VOLUME_PARTICIPATION_PCT`는 종목의 평균 거래량 대비 1회 주문 수량 상한이며 기본값 0은 비활성(무제한)이다. 값이 없으면 시장가 주문이 실제 유동성보다 커서 대량 미체결로 남아 이후 사이클 전체를 막을 수 있다. `KIS_PAPER_ROTATION_SELL_SCORE`는 손절·익절 기준에 못 미쳐도 보유 종목의 기술점수가 이 값 이하로 약화되면 선제적으로 매도해 다른 후보로 로테이션하며, 기본값 -1000은 사실상 비활성이다.
+`KIS_PAPER_CANDIDATE_POOL_SIZE`는 AI가 한 사이클에서 비교할 기술 후보 수다. KIS가 매매 불가로 거절한 종목은 최근 `KIS_PAPER_REJECTED_SYMBOL_LOOKBACK`개 사이클 동안 자동 제외하며, 운영자가 항상 제외할 종목은 `KIS_PAPER_EXCLUDED_CODES`에 쉼표로 구분해 지정할 수 있다. `KIS_PAPER_MAX_VOLUME_PARTICIPATION_PCT`는 종목의 평균 거래량 대비 1회 주문 수량 상한이며 기본값 0은 비활성(무제한)이다. 값이 없으면 시장가 주문이 실제 유동성보다 커서 대량 미체결로 남아 이후 사이클 전체를 막을 수 있다. `KIS_PAPER_ROTATION_SELL_SCORE`는 손절·익절 기준에 못 미쳐도 보유 종목의 기술점수가 이 값 이하로 약화되면 선제적으로 매도해 다른 후보로 로테이션하며, 기본값 -1000은 사실상 비활성이다.
 
 정상 장중에는 현금 보유 목표를 0%로 두고 종목당 최대 비중 안에서 가용 현금을 전액 분산한다. 체결 단위와 거래 비용 때문에 생기는 소액 잔액만 남는다. 운용 상태와 최근 사이클은 `/agent/autonomous/status`, `/agent/autonomous/cycles`에서 확인한다. 시작·중지·즉시 분석은 각각 `/agent/autonomous/start`, `/stop`, `/run`, 저장된 일봉 워크포워드 검증은 `POST /agent/autonomous/backtest?days=60&universe=50`을 사용한다.
 

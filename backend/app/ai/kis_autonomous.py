@@ -319,8 +319,16 @@ class KisPaperAutonomousEngine:
         }
 
     def _rank_candidates(self, conn) -> list[dict]:
+        pool_size = max(12, int(os.getenv("KIS_PAPER_CANDIDATE_POOL_SIZE", "30")))
+        excluded_codes = self._excluded_candidate_codes(conn)
         ranked = []
-        for candidate in repository.get_candidates(conn):
+        for candidate in repository.get_candidates(
+            conn,
+            top_change=max(30, pool_size),
+            top_volume=max(20, pool_size),
+        ):
+            if candidate["code"] in excluded_codes:
+                continue
             analytics = calculate_stock_analytics(
                 repository.get_price_history(conn, candidate["code"])
             )
@@ -334,7 +342,35 @@ class KisPaperAutonomousEngine:
                 "macd_histogram": analytics["momentum"]["macd_histogram"],
             })
         ranked.sort(key=lambda item: abs(item["score"]), reverse=True)
-        return ranked[:12]
+        return ranked[:pool_size]
+
+    @staticmethod
+    def _excluded_candidate_codes(conn) -> set[str]:
+        excluded = {
+            code.strip()
+            for code in os.getenv("KIS_PAPER_EXCLUDED_CODES", "").split(",")
+            if code.strip()
+        }
+        lookback = max(
+            0,
+            int(os.getenv("KIS_PAPER_REJECTED_SYMBOL_LOOKBACK", "50")),
+        )
+        if lookback == 0:
+            return excluded
+        rejection_markers = (
+            "40070000",
+            "매매불가 종목",
+            "매매불가종목",
+            "not tradable",
+        )
+        for cycle in repository.get_kis_paper_cycles(conn, lookback):
+            for decision in cycle.get("decisions") or []:
+                error = str(decision.get("execution_error") or "").lower()
+                if error and any(marker in error for marker in rejection_markers):
+                    code = str(decision.get("code") or "").strip()
+                    if code:
+                        excluded.add(code)
+        return excluded
 
     @staticmethod
     def _build_prompt(
