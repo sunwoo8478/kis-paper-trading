@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from app.integrations.kis import KisApiError, KisPaperClient, KisPaperConfig
 
@@ -24,6 +25,11 @@ class _Session:
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
         return self.responses.pop(0)
+
+
+class _TimeoutSession(_Session):
+    def request(self, method, url, **kwargs):
+        raise requests.ReadTimeout("broker timeout")
 
 
 def _config(**overrides):
@@ -174,6 +180,16 @@ def test_buying_power_maps_cash_without_margin():
     assert buying_power["cash_only_quantity"] == 11
     assert session.calls[1][2]["headers"]["tr_id"] == "VTTC8908R"
     assert session.calls[1][2]["params"]["ORD_DVSN"] == "01"
+
+
+def test_transport_timeout_is_sanitized_as_kis_error():
+    session = _TimeoutSession([
+        _Response({"access_token": "token", "expires_in": 3600}),
+    ])
+    client = KisPaperClient(_config(), session)
+
+    with pytest.raises(KisApiError, match="통신 지연"):
+        client.get_buying_power("005930", 70_000)
 
 
 def test_order_is_locked_until_explicitly_enabled():

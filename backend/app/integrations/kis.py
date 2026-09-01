@@ -402,15 +402,19 @@ class KisPaperClient:
         }
         with self._http_lock:
             self._throttle()
-            response = self.session.request(
-                method,
-                f"{self.config.base_url}{path}",
-                headers=headers,
-                params=params,
-                json=json_body,
-                timeout=10,
-            )
-            self._last_request_at = time.monotonic()
+            try:
+                response = self.session.request(
+                    method,
+                    f"{self.config.base_url}{path}",
+                    headers=headers,
+                    params=params,
+                    json=json_body,
+                    timeout=10,
+                )
+            except requests.RequestException as exc:
+                raise KisApiError(f"KIS {path} 통신 지연 또는 연결 실패") from exc
+            finally:
+                self._last_request_at = time.monotonic()
         return self._response_payload(response, path)
 
     def _throttle(self) -> None:
