@@ -298,6 +298,10 @@ def test_kis_engine_waits_while_broker_order_has_remaining_quantity(
     _seed(db_path)
     monkeypatch.setenv("AI_PROVIDER", "ollama")
     monkeypatch.setenv("AI_MODEL", "test-model")
+    monkeypatch.setattr(
+        "app.ai.kis_autonomous.ask_local_model",
+        lambda system, prompt: '```json\n{"decisions":[]}\n```',
+    )
     broker_order = {
         "broker_order_id": "12345",
         "branch_code": "00950",
@@ -329,7 +333,8 @@ def test_kis_engine_waits_while_broker_order_has_remaining_quantity(
 
     result = engine.run_cycle(datetime(2026, 9, 1, 10, 0, tzinfo=KST))
 
-    assert result["status"] == "pending_orders"
+    assert result["error"] is None, result["error"]
+    assert result["status"] == "pending_orders", result
     assert result["broker_order_ids"] == []
     assert result["blocked_decisions"][0]["rule"] == "open_broker_order"
     assert client.orders == []
@@ -337,4 +342,39 @@ def test_kis_engine_waits_while_broker_order_has_remaining_quantity(
     stored = repository.get_kis_paper_orders(conn, 1)[0]
     assert stored["filled_quantity"] == 3
     assert stored["remaining_quantity"] == 7
+    conn.close()
+
+
+def test_guard_skips_open_order_stock_and_uses_other_candidate(tmp_path):
+    db_path = str(tmp_path / "open-order-other-stock.db")
+    _seed(db_path)
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000,
+        "cash": 500_000,
+        "evaluated_value": 500_000,
+        "positions": [],
+        "max_drawdown_pct": 0,
+    }
+    candidates = [
+        {"code": "005930", "score": 80, "change_pct": 1.0},
+        {"code": "000660", "score": 70, "change_pct": 1.0},
+    ]
+
+    decisions, blocked = engine._guard_decisions(
+        conn,
+        risk,
+        candidates,
+        [
+            {"code": "005930", "action": "buy", "reason": "test"},
+            {"code": "000660", "action": "buy", "reason": "test"},
+        ],
+        "neutral",
+        100,
+        open_order_codes={"005930"},
+    )
+
+    assert [item["code"] for item in decisions] == ["000660"]
+    assert any(item["code"] == "005930" for item in blocked)
     conn.close()

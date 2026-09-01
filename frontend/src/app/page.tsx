@@ -68,12 +68,12 @@ export default function DashboardPage() {
   const pendingOrders = isKis
     ? (kisOrders.data ?? []).filter((order) => order.remaining_quantity > 0).length
     : (orders.data ?? []).filter((order) => order.status === "pending").length;
-  const reservedCash = isKis
-    ? (kisOrders.data ?? []).reduce((sum, order) => sum + order.remaining_quantity * (order.avg_fill_price ?? 0), 0)
-    : 0;
   const orderableCash = isKis
     ? kisBuyingPower.data?.cash_only_buying_power ?? kisBuyingPower.data?.orderable_cash
     : cash;
+  const reservedCash = isKis && cash !== undefined && cash !== null && orderableCash !== undefined && orderableCash !== null
+    ? Math.max(0, cash - orderableCash)
+    : 0;
   const activeAlerts = (alerts.data ?? []).filter((alert) => alert.active).length;
   const chartData = (isKis ? kisHistory.data : history.data)?.map((snapshot) => ({ time: snapshot.ts, value: snapshot.total_value })) ?? [];
   const maxPositionWeight = positions.reduce((max, position) => Math.max(max, position.weight_pct), 0);

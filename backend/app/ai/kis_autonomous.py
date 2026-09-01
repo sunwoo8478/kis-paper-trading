@@ -148,52 +148,53 @@ class KisPaperAutonomousEngine:
                         if order["remaining_quantity"] > 0
                         and order["status"] in {"pending", "partial"}
                     ]
-                    if open_orders:
-                        status = "pending_orders"
-                        market_regime = "pending_orders"
-                        target_exposure_pct = (
-                            risk["evaluated_value"] / risk["total_value"] * 100
-                            if risk["total_value"] else 0
-                        )
-                        blocked = [
-                            {
-                                "code": order["code"],
-                                "action": order["side"],
-                                "rule": "open_broker_order",
-                                "reason": (
-                                    f"KIS 주문 {order['broker_order_id']} 미체결 "
-                                    f"{order['remaining_quantity']}주 대기"
-                                ),
-                            }
-                            for order in open_orders
-                        ]
-                    else:
-                        self._update_runtime(phase="analysis")
-                        candidates = self._rank_candidates(conn)
-                        market_regime = AutonomousTradingEngine._market_regime(candidates)
-                        target_exposure_pct = AutonomousTradingEngine._target_exposure_pct(
-                            market_regime,
-                            risk,
-                        )
-                        prompt = self._build_prompt(
-                            risk,
-                            candidates,
-                            market_regime,
-                            target_exposure_pct,
-                        )
-                        raw = ask_local_model(_SYSTEM_PROMPT, prompt)
-                        proposed = (extract_json_block(raw) or {}).get("decisions") or []
-                        decisions, blocked = self._guard_decisions(
-                            conn,
-                            risk,
-                            candidates,
-                            proposed,
-                            market_regime,
-                            target_exposure_pct,
-                        )
-                        self._update_runtime(phase="execution")
-                        broker_order_ids = self._execute(conn, decisions)
-                        status = "executed" if broker_order_ids else "observed"
+                    blocked = [
+                        {
+                            "code": order["code"],
+                            "action": order["side"],
+                            "rule": "open_broker_order",
+                            "reason": (
+                                f"KIS 주문 {order['broker_order_id']} 미체결 "
+                                f"{order['remaining_quantity']}주 대기, 해당 종목만 제외"
+                            ),
+                        }
+                        for order in open_orders
+                    ]
+                    open_order_codes = {order["code"] for order in open_orders}
+                    self._update_runtime(phase="analysis")
+                    candidates = self._rank_candidates(conn)
+                    market_regime = AutonomousTradingEngine._market_regime(candidates)
+                    target_exposure_pct = AutonomousTradingEngine._target_exposure_pct(
+                        market_regime,
+                        risk,
+                    )
+                    prompt = self._build_prompt(
+                        risk,
+                        candidates,
+                        market_regime,
+                        target_exposure_pct,
+                    )
+                    raw = ask_local_model(_SYSTEM_PROMPT, prompt)
+                    proposed = (extract_json_block(raw) or {}).get("decisions") or []
+                    allocation_risk = dict(risk)
+                    allocation_risk["cash"] = self._realtime_orderable_cash(candidates)
+                    decisions, guard_blocked = self._guard_decisions(
+                        conn,
+                        allocation_risk,
+                        candidates,
+                        proposed,
+                        market_regime,
+                        target_exposure_pct,
+                        open_order_codes=open_order_codes,
+                    )
+                    blocked.extend(guard_blocked)
+                    self._update_runtime(phase="execution")
+                    broker_order_ids = self._execute(conn, decisions)
+                    status = (
+                        "executed" if broker_order_ids
+                        else "pending_orders" if open_orders
+                        else "observed"
+                    )
                     repository.insert_kis_paper_snapshot(
                         conn,
                         total_value=risk["total_value"],
@@ -365,7 +366,9 @@ class KisPaperAutonomousEngine:
         proposed: list[dict],
         market_regime: str,
         target_exposure_pct: float,
+        open_order_codes: set[str] | None = None,
     ) -> tuple[list[dict], list[dict]]:
+        open_order_codes = open_order_codes or set()
         positions = {item["code"]: item for item in risk["positions"]}
         by_code = {item["code"]: item for item in candidates}
         max_orders = max(1, int(os.getenv("KIS_PAPER_MAX_ORDERS_PER_CYCLE", "5")))
@@ -382,6 +385,8 @@ class KisPaperAutonomousEngine:
             blocked.append({"code": code, "action": action, "rule": rule, "reason": reason})
 
         for position in positions.values():
+            if position["code"] in open_order_codes:
+                continue
             if position["return_pct"] <= -stop_loss_pct:
                 decisions.append({
                     "code": position["code"],
@@ -439,6 +444,9 @@ class KisPaperAutonomousEngine:
                 continue
             if code in cooldown_codes:
                 block(code, "buy", "cooldown", "최근 KIS 주문 재주문 대기")
+                continue
+            if code in open_order_codes:
+                block(code, "buy", "open_broker_order", "동일 종목 미체결 주문 대기")
                 continue
             candidate = by_code.get(code)
             if not candidate or candidate["score"] < 25:
@@ -530,6 +538,21 @@ class KisPaperAutonomousEngine:
         except (KisApiError, ValueError, ZeroDivisionError, KeyError):
             return 0
         return max(0, min(quantity, max_affordable))
+
+    def _realtime_orderable_cash(self, candidates: list[dict]) -> float:
+        for candidate in candidates:
+            code = candidate.get("code")
+            if not code:
+                continue
+            try:
+                price = float(self.provider.get_latest_price(code))
+                if price <= 0:
+                    continue
+                power = self.client.get_buying_power(code, price)
+                return max(0.0, float(power.get("orderable_cash") or 0))
+            except (KisApiError, ValueError, TypeError, KeyError):
+                continue
+        return 0.0
 
     def _connection(self):
         conn = sqlite3.connect(self.db_path)
