@@ -1,10 +1,12 @@
 import json
+import math
 import os
 import sqlite3
 import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from .. import repository
 from ..analytics import calculate_stock_analytics
@@ -12,6 +14,12 @@ from ..execution.base import OrderExecutionError
 from ..execution.kis_paper_executor import KisPaperExecutor
 from ..integrations.kis import KisApiError, KisPaperClient
 from .autonomous import AutonomousTradingEngine, is_regular_market_open
+from .competition import (
+    competition_market_regime,
+    competition_target_exposure_pct,
+    position_target_pct,
+    rank_competition_candidates,
+)
 from .local_model import ask_local_model, extract_json_block, is_configured
 
 
@@ -39,11 +47,13 @@ class KisPaperAutonomousEngine:
         self._cycle_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._last_market_data_refresh_date: str | None = None
         self._runtime = {
             "running": False,
             "phase": "starting",
             "last_cycle_at": None,
             "last_error": None,
+            "market_data_as_of": None,
         }
         with self._connection() as conn:
             enabled = os.getenv("KIS_PAPER_AUTONOMOUS_ENABLED", "false").lower() in {
@@ -90,6 +100,7 @@ class KisPaperAutonomousEngine:
             **runtime,
             **control,
             "execution_mode": "kis-paper",
+            "strategy_mode": os.getenv("KIS_PAPER_STRATEGY_MODE", "standard"),
             "market_open": is_regular_market_open(),
             "interval_seconds": self.interval_seconds,
             "next_cycle_at": next_cycle,
@@ -162,12 +173,28 @@ class KisPaperAutonomousEngine:
                     ]
                     open_order_codes = {order["code"] for order in open_orders}
                     self._update_runtime(phase="analysis")
+                    self._refresh_completed_market_data(conn)
                     candidates = self._rank_candidates(conn)
-                    market_regime = AutonomousTradingEngine._market_regime(candidates)
-                    target_exposure_pct = AutonomousTradingEngine._target_exposure_pct(
-                        market_regime,
-                        risk,
-                    )
+                    if self._competition_enabled():
+                        daily_return_pct = self._daily_return_pct(conn, risk["total_value"])
+                        market_regime = competition_market_regime(
+                            repository.get_market_breadth(conn),
+                            risk["max_drawdown_pct"],
+                            float(os.getenv("KIS_COMPETITION_MAX_DRAWDOWN_STOP_PCT", "8")),
+                        )
+                        target_exposure_pct = competition_target_exposure_pct(
+                            market_regime,
+                            risk["max_drawdown_pct"],
+                            daily_return_pct,
+                            float(os.getenv("KIS_COMPETITION_DAILY_STOP_PCT", "2.5")),
+                            float(os.getenv("KIS_COMPETITION_MAX_DRAWDOWN_STOP_PCT", "8")),
+                        )
+                    else:
+                        market_regime = AutonomousTradingEngine._market_regime(candidates)
+                        target_exposure_pct = AutonomousTradingEngine._target_exposure_pct(
+                            market_regime,
+                            risk,
+                        )
                     prompt = self._build_prompt(
                         risk,
                         candidates,
@@ -321,6 +348,35 @@ class KisPaperAutonomousEngine:
     def _rank_candidates(self, conn) -> list[dict]:
         pool_size = max(12, int(os.getenv("KIS_PAPER_CANDIDATE_POOL_SIZE", "30")))
         excluded_codes = self._excluded_candidate_codes(conn)
+        if self._competition_enabled():
+            universe_size = max(
+                pool_size,
+                int(os.getenv("KIS_COMPETITION_UNIVERSE_SIZE", "200")),
+            )
+            candidates = repository.get_candidates(
+                conn,
+                top_change=universe_size,
+                top_volume=universe_size,
+            )
+            items = [
+                (candidate, repository.get_price_history(conn, candidate["code"]))
+                for candidate in candidates
+                if candidate["code"] not in excluded_codes
+            ]
+            return rank_competition_candidates(
+                items,
+                pool_size=pool_size,
+                min_avg_trading_value=float(
+                    os.getenv("KIS_COMPETITION_MIN_AVG_TRADING_VALUE", "1000000000")
+                ),
+                min_price=float(os.getenv("KIS_COMPETITION_MIN_PRICE", "1000")),
+                max_return_20_pct=float(
+                    os.getenv("KIS_COMPETITION_MAX_20D_RETURN_PCT", "120")
+                ),
+                max_volatility_pct=float(
+                    os.getenv("KIS_COMPETITION_MAX_VOLATILITY_PCT", "120")
+                ),
+            )
         ranked = []
         for candidate in repository.get_candidates(
             conn,
@@ -384,7 +440,14 @@ class KisPaperAutonomousEngine:
             for item in risk["positions"]
         ) or "없음"
         candidate_lines = [
-            f"{item['name']}({item['code']}) 기술점수 {item['score']} RSI {item.get('rsi14')}"
+            (
+                f"{item['name']}({item['code']}) 대회점수 {item['score']} "
+                f"5일 {item.get('return_5_pct', 0):.2f}% "
+                f"20일 {item.get('return_20_pct', 0):.2f}% "
+                f"변동성 {item.get('volatility_pct', 0):.2f}%"
+                if "return_20_pct" in item
+                else f"{item['name']}({item['code']}) 기술점수 {item['score']} RSI {item.get('rsi14')}"
+            )
             for item in candidates
         ]
         return (
@@ -408,36 +471,82 @@ class KisPaperAutonomousEngine:
         positions = {item["code"]: item for item in risk["positions"]}
         by_code = {item["code"]: item for item in candidates}
         max_orders = max(1, int(os.getenv("KIS_PAPER_MAX_ORDERS_PER_CYCLE", "5")))
-        max_position_pct = float(os.getenv("KIS_PAPER_MAX_POSITION_PCT", "20"))
+        competition_mode = self._competition_enabled()
+        max_position_pct = float(os.getenv(
+            "KIS_COMPETITION_MAX_POSITION_PCT" if competition_mode else "KIS_PAPER_MAX_POSITION_PCT",
+            "12" if competition_mode else "20",
+        ))
         cash_reserve_pct = max(0.0, float(os.getenv("KIS_PAPER_CASH_RESERVE_PCT", "0")))
         stop_loss_pct = float(os.getenv("KIS_PAPER_STOP_LOSS_PCT", "5"))
         take_profit_pct = float(os.getenv("KIS_PAPER_TAKE_PROFIT_PCT", "12"))
         rotation_sell_score = float(os.getenv("KIS_PAPER_ROTATION_SELL_SCORE", "-1000"))
         cooldown_minutes = max(0, int(os.getenv("KIS_PAPER_COOLDOWN_MINUTES", "60")))
+        max_positions = max(1, int(os.getenv("KIS_COMPETITION_MAX_POSITIONS", "10")))
         decisions: list[dict] = []
         blocked: list[dict] = []
 
         def block(code, action, rule, reason):
             blocked.append({"code": code, "action": action, "rule": rule, "reason": reason})
 
+        target_invested = risk["total_value"] * target_exposure_pct / 100
+        projected_evaluated = risk["evaluated_value"]
+        if competition_mode and projected_evaluated > target_invested:
+            excess = projected_evaluated - target_invested
+            weakest = sorted(
+                positions.values(),
+                key=lambda position: by_code.get(position["code"], {}).get("score", -1),
+            )
+            for position in weakest:
+                if excess <= 0 or len(decisions) >= max_orders:
+                    break
+                if position["code"] in open_order_codes:
+                    continue
+                price = float(position.get("current_price") or 0)
+                if price <= 0:
+                    continue
+                quantity = min(position["quantity"], max(1, math.ceil(excess / price)))
+                decisions.append({
+                    "code": position["code"],
+                    "action": "sell",
+                    "quantity": quantity,
+                    "reason": f"대회 모드 목표 투자비중 {target_exposure_pct:.0f}%로 위험 축소",
+                })
+                reduced = min(position["market_value"], quantity * price)
+                excess -= reduced
+                projected_evaluated -= reduced
+
+        decided_codes = {item["code"] for item in decisions}
         for position in positions.values():
             if position["code"] in open_order_codes:
                 continue
-            if position["return_pct"] <= -stop_loss_pct:
+            if position["code"] in decided_codes:
+                continue
+            competition_exit = (
+                self._competition_exit_reason(conn, position)
+                if competition_mode else None
+            )
+            if competition_exit:
+                decisions.append({
+                    "code": position["code"],
+                    "action": "sell",
+                    "quantity": position["quantity"],
+                    "reason": competition_exit,
+                })
+            elif not competition_mode and position["return_pct"] <= -stop_loss_pct:
                 decisions.append({
                     "code": position["code"],
                     "action": "sell",
                     "quantity": position["quantity"],
                     "reason": f"손절 기준 {-stop_loss_pct:.1f}% 도달",
                 })
-            elif position["return_pct"] >= take_profit_pct:
+            elif not competition_mode and position["return_pct"] >= take_profit_pct:
                 decisions.append({
                     "code": position["code"],
                     "action": "sell",
                     "quantity": max(1, position["quantity"] // 2),
                     "reason": f"수익 보호 기준 {take_profit_pct:.1f}% 도달",
                 })
-            else:
+            elif not competition_mode:
                 score = self._position_score(conn, by_code, position["code"])
                 if score is not None and score <= rotation_sell_score:
                     decisions.append({
@@ -448,7 +557,7 @@ class KisPaperAutonomousEngine:
                     })
 
         proposed_buys = [item for item in proposed if item.get("action") == "buy"]
-        if market_regime == "bearish":
+        if not competition_mode and market_regime == "bearish":
             for item in proposed_buys or [{"code": None}]:
                 block(item.get("code"), "buy", "bearish_regime", "하락장 신규 매수 중단")
             return decisions[:max_orders], blocked
@@ -463,17 +572,24 @@ class KisPaperAutonomousEngine:
             str(item.get("code")): str(item.get("reason") or "AI 추세 확인")
             for item in proposed_buys
         }
-        ordered_codes = list(proposed_reasons)
-        ordered_codes.extend(
-            item["code"] for item in candidates
-            if item["score"] >= 25 and item["code"] not in proposed_reasons
+        ranked_codes = [item["code"] for item in candidates if item["score"] >= 25]
+        ordered_codes = (
+            ranked_codes + [code for code in proposed_reasons if code not in ranked_codes]
+            if competition_mode
+            else list(proposed_reasons) + [
+                code for code in ranked_codes if code not in proposed_reasons
+            ]
         )
-        target_invested = risk["total_value"] * target_exposure_pct / 100
         spendable_cash = max(0.0, risk["cash"] - risk["total_value"] * cash_reserve_pct / 100)
         remaining_cash = min(
             spendable_cash,
             max(0.0, target_invested - risk["evaluated_value"]),
         )
+        projected_position_codes = set(positions) - {
+            item["code"] for item in decisions
+            if item["action"] == "sell"
+            and item["quantity"] >= positions[item["code"]]["quantity"]
+        }
         for code in ordered_codes:
             if len(decisions) >= max_orders:
                 block(code, "buy", "cycle_order_limit", "사이클 주문 수 한도")
@@ -484,6 +600,9 @@ class KisPaperAutonomousEngine:
             if code in open_order_codes:
                 block(code, "buy", "open_broker_order", "동일 종목 미체결 주문 대기")
                 continue
+            if competition_mode and code not in projected_position_codes and len(projected_position_codes) >= max_positions:
+                block(code, "buy", "max_positions", f"대회 모드 최대 {max_positions}종목")
+                continue
             candidate = by_code.get(code)
             if not candidate or candidate["score"] < 25:
                 block(code, "buy", "weak_signal", "기술점수 기준 미달")
@@ -492,7 +611,17 @@ class KisPaperAutonomousEngine:
                 block(code, "buy", "price_spike", "15% 이상 급등 추격 제한")
                 continue
             existing_value = positions.get(code, {}).get("market_value", 0)
-            capacity = risk["total_value"] * max_position_pct / 100 - existing_value
+            position_limit_pct = (
+                min(
+                    max_position_pct,
+                    position_target_pct(
+                        candidate.get("volatility_pct"),
+                        float(os.getenv("KIS_COMPETITION_BASE_POSITION_PCT", "12")),
+                    ),
+                )
+                if competition_mode else max_position_pct
+            )
+            capacity = risk["total_value"] * position_limit_pct / 100 - existing_value
             if capacity <= 0:
                 block(code, "buy", "position_limit", "종목당 비중 한도")
                 continue
@@ -515,8 +644,47 @@ class KisPaperAutonomousEngine:
                 "quantity": quantity,
                 "reason": proposed_reasons.get(code, "정량 상위 후보 분산 매수"),
             })
+            projected_position_codes.add(code)
             remaining_cash -= quantity * price
         return decisions[:max_orders], blocked
+
+    @staticmethod
+    def _competition_enabled() -> bool:
+        return os.getenv("KIS_PAPER_STRATEGY_MODE", "standard") == "competition_3m"
+
+    def _competition_exit_reason(self, conn, position: dict) -> str | None:
+        hard_stop_pct = float(os.getenv("KIS_COMPETITION_HARD_STOP_PCT", "6"))
+        if position["return_pct"] <= -hard_stop_pct:
+            return f"대회 모드 손실 제한 {-hard_stop_pct:.1f}% 도달"
+        history = repository.get_price_history(conn, position["code"])
+        if len(history) < 21:
+            return None
+        analytics = calculate_stock_analytics(history)
+        ma20 = analytics["moving_averages"]["ma20"]
+        atr14 = analytics["volatility"]["atr14"]
+        current = float(position.get("current_price") or 0)
+        closes = [float(bar["close"]) for bar in history]
+        return_5 = (closes[-1] / closes[-6] - 1) * 100 if len(closes) >= 6 else 0
+        if ma20 and current < ma20 and return_5 < 0:
+            return "20일 추세 이탈과 단기 모멘텀 약화"
+        if atr14 and position["return_pct"] >= 3:
+            peak = max(float(bar["high"]) for bar in history[-20:])
+            trail_atr = float(os.getenv("KIS_COMPETITION_TRAILING_STOP_ATR", "2.5"))
+            if current <= peak - atr14 * trail_atr:
+                return f"최고가 대비 {trail_atr:.1f} ATR 추적손절"
+        return None
+
+    @staticmethod
+    def _daily_return_pct(conn, current_total: float) -> float | None:
+        kst = ZoneInfo("Asia/Seoul")
+        today = datetime.now(kst).date()
+        snapshots = [
+            item for item in repository.get_kis_paper_snapshots(conn)
+            if datetime.fromisoformat(item["ts"]).astimezone(kst).date() == today
+        ]
+        if not snapshots or not snapshots[0]["total_value"]:
+            return None
+        return (current_total / float(snapshots[0]["total_value"]) - 1) * 100
 
     @staticmethod
     def _position_score(conn, by_code: dict, code: str) -> float | None:
@@ -594,6 +762,27 @@ class KisPaperAutonomousEngine:
         conn = sqlite3.connect(self.db_path)
         repository.init_db(conn)
         return conn
+
+    def _refresh_completed_market_data(self, conn) -> None:
+        if not self._competition_enabled() or not hasattr(self.provider, "get_market_snapshot"):
+            return
+        kst = ZoneInfo("Asia/Seoul")
+        target = datetime.now(kst).date() - timedelta(days=1)
+        if self._last_market_data_refresh_date == target.isoformat():
+            return
+        for offset in range(7):
+            session_date = target - timedelta(days=offset)
+            try:
+                bars = self.provider.get_market_snapshot(session_date.strftime("%Y%m%d"))
+            except Exception:
+                continue
+            if not bars:
+                continue
+            repository.upsert_market_snapshot(conn, bars)
+            as_of = next(iter(bars.values())).date
+            self._last_market_data_refresh_date = target.isoformat()
+            self._update_runtime(market_data_as_of=as_of)
+            return
 
     def _update_runtime(self, **values) -> None:
         with self._state_lock:

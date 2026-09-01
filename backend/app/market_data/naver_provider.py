@@ -31,6 +31,9 @@ class NaverRealtimeProvider(MarketDataProvider):
             raise ValueError(f"no price data available for {code}")
         return float(close_price.replace(",", ""))
 
+    def get_market_snapshot(self, date: str) -> dict[str, OhlcvBar]:
+        return self._pykrx.get_market_snapshot(date)
+
     def get_market_status(self, code: str = "005930") -> str | None:
         return self._get_realtime_item(code).get("marketStatus")
 

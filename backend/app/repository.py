@@ -1035,6 +1035,19 @@ def upsert_price_history(conn: sqlite3.Connection, code: str, bars: list) -> Non
     conn.commit()
 
 
+def upsert_market_snapshot(conn: sqlite3.Connection, bars_by_code: dict) -> None:
+    conn.executemany(
+        "INSERT INTO price_history (code, date, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(code, date) DO UPDATE SET open=excluded.open, high=excluded.high, "
+        "low=excluded.low, close=excluded.close, volume=excluded.volume",
+        [
+            (code, bar.date, bar.open, bar.high, bar.low, bar.close, bar.volume)
+            for code, bar in bars_by_code.items()
+        ],
+    )
+    conn.commit()
+
+
 def get_price_history(conn: sqlite3.Connection, code: str) -> list[dict]:
     rows = conn.execute(
         "SELECT date, open, high, low, close, volume FROM price_history WHERE code = ? ORDER BY date",
@@ -1132,6 +1145,38 @@ def get_candidates(conn: sqlite3.Connection, top_change: int = 30, top_volume: i
         (by_code[code] for code in selected_codes if code in by_code),
         key=lambda q: q["code"],
     )
+
+
+def get_market_breadth(conn: sqlite3.Connection) -> dict:
+    row = conn.execute(
+        """
+        WITH recent AS (
+            SELECT code, close,
+                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+            FROM price_history
+            WHERE close > 0
+        ), stats AS (
+            SELECT code,
+                   MAX(CASE WHEN rn = 1 THEN close END) AS latest_close,
+                   MAX(CASE WHEN rn = 2 THEN close END) AS previous_close,
+                   AVG(CASE WHEN rn <= 20 THEN close END) AS ma20,
+                   SUM(CASE WHEN rn <= 20 THEN 1 ELSE 0 END) AS observations
+            FROM recent
+            WHERE rn <= 20
+            GROUP BY code
+        )
+        SELECT COUNT(*),
+               AVG(CASE WHEN latest_close > previous_close THEN 1.0 ELSE 0.0 END),
+               AVG(CASE WHEN latest_close > ma20 THEN 1.0 ELSE 0.0 END)
+        FROM stats
+        WHERE observations >= 20 AND previous_close IS NOT NULL
+        """
+    ).fetchone()
+    return {
+        "symbol_count": int(row[0] or 0),
+        "advancing_ratio": float(row[1] or 0),
+        "above_ma20_ratio": float(row[2] or 0),
+    }
 
 
 def insert_agent_run(

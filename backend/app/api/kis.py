@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from ..ai.backtest import run_competition_backtest
 from ..execution.base import OrderExecutionError
 from ..execution.kis_paper_executor import KisPaperExecutor
 from ..integrations.kis import KisApiError
@@ -97,6 +98,19 @@ def kis_autonomous_cycles(request: Request, limit: int = Query(default=30)):
     return repository.get_kis_paper_cycles(
         request.app.state.conn,
         max(1, min(limit, 200)),
+    )
+
+
+@router.get("/kis/autonomous/backtest/competition")
+def kis_competition_backtest(
+    request: Request,
+    days: int = Query(default=60),
+    universe: int = Query(default=200),
+):
+    return run_competition_backtest(
+        request.app.state.conn,
+        days=max(30, min(days, 252)),
+        universe_size=max(30, min(universe, 500)),
     )
 
 

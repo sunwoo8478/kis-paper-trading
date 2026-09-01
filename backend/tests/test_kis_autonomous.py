@@ -19,6 +19,24 @@ class _Provider:
         return 1000.0
 
 
+class _SnapshotProvider(_Provider):
+    def __init__(self):
+        self.calls = 0
+
+    def get_market_snapshot(self, date):
+        self.calls += 1
+        return {
+            "005930": OhlcvBar(
+                date="2026-08-31",
+                open=1000,
+                high=1100,
+                low=990,
+                close=1080,
+                volume=200_000,
+            )
+        }
+
+
 class _Client:
     def __init__(self, order_enabled=True, broker_orders=None):
         self.order_enabled = order_enabled
@@ -438,4 +456,58 @@ def test_rank_candidates_excludes_recent_nontradable_symbol_and_uses_configured_
 
     assert len(ranked) == 15
     assert "368600" not in {item["code"] for item in ranked}
+    conn.close()
+
+
+def test_competition_mode_sells_down_to_regime_target(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "competition-risk-off.db")
+    _seed(db_path)
+    monkeypatch.setenv("KIS_PAPER_STRATEGY_MODE", "competition_3m")
+    engine = KisPaperAutonomousEngine(db_path, _Provider(), _Client())
+    conn = sqlite3.connect(db_path)
+    risk = {
+        "total_value": 1_000_000,
+        "cash": 0,
+        "evaluated_value": 1_000_000,
+        "positions": [{
+            "code": "005930",
+            "name": "삼성전자",
+            "quantity": 1000,
+            "avg_price": 1000,
+            "current_price": 1000,
+            "market_value": 1_000_000,
+            "return_pct": 0,
+        }],
+        "max_drawdown_pct": -4,
+    }
+
+    decisions, _ = engine._guard_decisions(
+        conn,
+        risk,
+        [{"code": "005930", "score": 80, "change_pct": 1, "volatility_pct": 30}],
+        [],
+        "bearish",
+        30,
+    )
+
+    assert decisions[0]["action"] == "sell"
+    assert decisions[0]["quantity"] == 700
+    assert "30%" in decisions[0]["reason"]
+    conn.close()
+
+
+def test_competition_mode_refreshes_completed_market_data_once(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "competition-refresh.db")
+    _seed(db_path)
+    monkeypatch.setenv("KIS_PAPER_STRATEGY_MODE", "competition_3m")
+    provider = _SnapshotProvider()
+    engine = KisPaperAutonomousEngine(db_path, provider, _Client())
+    conn = sqlite3.connect(db_path)
+
+    engine._refresh_completed_market_data(conn)
+    engine._refresh_completed_market_data(conn)
+
+    assert provider.calls == 1
+    assert repository.get_price_history(conn, "005930")[-1]["date"] == "2026-08-31"
+    assert engine.status()["market_data_as_of"] == "2026-08-31"
     conn.close()
