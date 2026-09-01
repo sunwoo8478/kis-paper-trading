@@ -18,7 +18,7 @@ import {
   streamCopilot,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { useAccountSource } from "@/components/account-source-provider";
+import { useAccountSource, type AccountSource } from "@/components/account-source-provider";
 import { cn } from "@/lib/utils";
 
 type CopilotAction = "screen" | "risk" | "market" | "orders";
@@ -36,7 +36,8 @@ const QUICK_ACTION_PROMPTS: Record<CopilotAction, string> = {
 export function AiCopilot() {
   const pathname = usePathname();
   const { source: accountSource } = useAccountSource();
-  const isKis = accountSource === "kis";
+  const [copilotMode, setCopilotMode] = useState<AccountSource>(accountSource);
+  const isKis = copilotMode === "kis";
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -109,11 +110,13 @@ export function AiCopilot() {
     const history = messages;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
 
-    const kisResult = isKis ? await askKisCopilot(question).catch(() => null) : null;
-    if (kisResult?.proposal) {
+    if (isKis) {
+      const kisResult = await askKisCopilot(question).catch(() => null);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: kisResult.answer, kisProposal: kisResult.proposal },
+        kisResult
+          ? { role: "assistant", content: kisResult.answer, kisProposal: kisResult.proposal }
+          : { role: "assistant", content: "KIS 모의계좌 조회 중 오류가 발생했습니다." },
       ]);
       return;
     }
@@ -251,9 +254,26 @@ export function AiCopilot() {
   return (
     <aside ref={panelRef} className="fixed z-40 flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl" aria-label="AI 운용 코파일럿">
       <header onPointerDown={startDrag} className={cn("flex min-h-14 touch-none items-center justify-between border-b border-border px-4", expanded ? "cursor-default" : "cursor-grab active:cursor-grabbing")}>
-        <div className="flex items-center gap-2.5"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><Bot className="h-4 w-4" /></span><div><p className="text-sm font-semibold">운용 코파일럿 · {isKis ? "KIS 모의계좌" : "로컬 시뮬레이터"}</p><p className="text-[9px] text-muted-foreground">{scope} 컨텍스트</p></div></div>
+        <div className="flex items-center gap-2.5"><span className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><Bot className="h-4 w-4" /></span><div><p className="text-sm font-semibold">운용 코파일럿</p><p className="text-[9px] text-muted-foreground">{scope} 컨텍스트</p></div></div>
         <div className="flex items-center gap-1"><Button variant="ghost" size="icon-sm" onClick={toggleExpanded} aria-label={expanded ? "코파일럿 축소" : "코파일럿 확대"}>{expanded ? <Minimize2 /> : <Maximize2 />}</Button><Button variant="ghost" size="icon-sm" onClick={() => setOpen(false)} aria-label="코파일럿 닫기"><X /></Button></div>
       </header>
+
+      <div className="grid grid-cols-2 gap-0.5 border-b border-border bg-muted/30 p-1">
+        <button
+          type="button"
+          onClick={() => setCopilotMode("kis")}
+          className={cn("rounded-md py-1.5 text-[10px] font-medium transition", isKis ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}
+        >
+          KIS 모의계좌
+        </button>
+        <button
+          type="button"
+          onClick={() => setCopilotMode("local")}
+          className={cn("rounded-md py-1.5 text-[10px] font-medium transition", !isKis ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}
+        >
+          로컬 시뮬레이터
+        </button>
+      </div>
 
       <div className="grid grid-cols-2 border-b border-border bg-muted/20 text-[9px]"><div className="border-r border-border px-3 py-2"><span className="text-muted-foreground">모델 연결</span><p className={cn("mt-0.5 font-medium", status.data?.model_connected ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.model_connected ? `${status.data.provider} / ${status.data.model}${status.data.context7_connected ? " · Context7" : ""}` : "연결 대기"}</p></div><div className="px-3 py-2"><span className="text-muted-foreground">자동 주문 권한</span><p className={cn("mt-0.5 font-medium", status.data?.auto_execution_enabled ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.auto_execution_enabled ? "모의 자동운용" : "안전 잠금"}</p></div></div>
 
