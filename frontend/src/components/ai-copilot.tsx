@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { usePathname } from "next/navigation";
 import useSWR from "swr";
 import { Bot, ChevronDown, CornerDownLeft, Maximize2, Minimize2, ShieldCheck, Sparkles, X } from "lucide-react";
@@ -8,17 +8,10 @@ import {
   ApiError,
   askKisCopilot,
   type CopilotChatMessage,
-  getAgentCandidates,
-  getAgentRuns,
   getAgentStatus,
-  getExperimentStatus,
-  getOrders,
-  getPortfolioRisk,
   placeKisOrder,
-  streamCopilot,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { useAccountSource, type AccountSource } from "@/components/account-source-provider";
 import { cn } from "@/lib/utils";
 
 type CopilotAction = "screen" | "risk" | "market" | "orders";
@@ -35,9 +28,6 @@ const QUICK_ACTION_PROMPTS: Record<CopilotAction, string> = {
 
 export function AiCopilot() {
   const pathname = usePathname();
-  const { source: accountSource } = useAccountSource();
-  const [copilotMode, setCopilotMode] = useState<AccountSource>(accountSource);
-  const isKis = copilotMode === "kis";
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -50,13 +40,7 @@ export function AiCopilot() {
   const logRef = useRef<HTMLDivElement>(null);
   const rectRef = useRef<PanelRect | null>(null);
   const restoreRectRef = useRef<PanelRect | null>(null);
-  const experimentIdRef = useRef<number | null>(null);
-  const risk = useSWR(open ? "/api/portfolio/risk:copilot" : null, getPortfolioRisk, { refreshInterval: 10000 });
-  const candidates = useSWR(open ? "/api/agent/candidates:copilot" : null, getAgentCandidates, { refreshInterval: 15000 });
-  const runs = useSWR(open ? "/api/agent/runs:copilot" : null, getAgentRuns, { refreshInterval: 15000 });
-  const orders = useSWR(open ? "/api/orders:copilot" : null, getOrders, { refreshInterval: 10000 });
   const status = useSWR(open ? "/api/agent/status:copilot" : null, getAgentStatus, { refreshInterval: 15000 });
-  const experiment = useSWR(open ? "/api/agent/experiment:copilot" : null, getExperimentStatus, { refreshInterval: 10000 });
   const stockCode = pathname.match(/^\/stocks\/(\d{6})/)?.[1] ?? null;
   const scope = stockCode ? `종목 ${stockCode}` : routeLabel(pathname);
 
@@ -84,33 +68,14 @@ export function AiCopilot() {
     return () => window.removeEventListener("resize", keepInViewport);
   }, [open]);
 
-  const context = useMemo(() => ({
-    risk: risk.data,
-    candidates: candidates.data ?? [],
-    runs: runs.data ?? [],
-    orders: orders.data ?? [],
-    scope,
-    stockCode,
-  }), [risk.data, candidates.data, runs.data, orders.data, scope, stockCode]);
-
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [messages, thinking]);
 
-  useEffect(() => {
-    const nextId = experiment.data?.experiment?.id ?? null;
-    if (nextId === null || experimentIdRef.current === nextId) return;
-    experimentIdRef.current = nextId;
-    setMessages([
-      { role: "assistant", content: `새 AI 운용 실험이 시작되었습니다. 실험 #${nextId} 이후의 계좌 데이터만 기준으로 답변합니다.` },
-    ]);
-  }, [experiment.data?.experiment?.id]);
-
-  const ask = async (question: string, fallbackAction: CopilotAction) => {
-    const history = messages;
+  const ask = async (question: string) => {
     setMessages((prev) => [...prev, { role: "user", content: question }]);
-
-    if (isKis) {
+    setThinking(true);
+    try {
       const kisResult = await askKisCopilot(question).catch(() => null);
       setMessages((prev) => [
         ...prev,
@@ -118,55 +83,6 @@ export function AiCopilot() {
           ? { role: "assistant", content: kisResult.answer, kisProposal: kisResult.proposal }
           : { role: "assistant", content: "KIS 모의계좌 조회 중 오류가 발생했습니다." },
       ]);
-      return;
-    }
-
-    if (!status.data?.model_connected) {
-      setMessages((prev) => [...prev, { role: "assistant", content: buildResponse(fallbackAction, context) }]);
-      return;
-    }
-
-    setThinking(true);
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-    try {
-      const result = await streamCopilot(question, scope, stockCode, history, (visibleText) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = { role: "assistant", content: visibleText };
-          return next;
-        });
-      });
-      const executedNote =
-        result.order_ids.length > 0 ? `\n\n체결된 주문: ${result.order_ids.join(", ")}` : "";
-      const blockedNote =
-        result.blocked.length > 0
-          ? `\n\n차단된 판단: ${result.blocked
-              .map((b) => `${String(b.decision.code ?? "?")}(${b.reason})`)
-              .join(", ")}`
-          : "";
-      if (executedNote || blockedNote) {
-        setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = {
-            role: "assistant",
-            content: next[next.length - 1].content + executedNote + blockedNote,
-          };
-          return next;
-        });
-      }
-      if (result.order_ids.length > 0) {
-        orders.mutate();
-        risk.mutate();
-      }
-    } catch (error) {
-      setMessages((prev) => {
-        const next = [...prev];
-        next[next.length - 1] = {
-          role: "assistant",
-          content: error instanceof ApiError ? `로컬 모델 오류: ${error.message}` : "로컬 모델 호출 중 오류가 발생했습니다.",
-        };
-        return next;
-      });
     } finally {
       setThinking(false);
     }
@@ -208,13 +124,11 @@ export function AiCopilot() {
     });
   };
 
-  const run = (action: CopilotAction) => ask(QUICK_ACTION_PROMPTS[action], action);
+  const run = (action: CopilotAction) => ask(QUICK_ACTION_PROMPTS[action]);
   const submit = () => {
     const value = prompt.trim();
     if (!value) return;
-    const normalized = value.toLowerCase();
-    const fallbackAction: CopilotAction = normalized.includes("위험") || normalized.includes("리스크") ? "risk" : normalized.includes("주문") || normalized.includes("매수") || normalized.includes("매도") ? "orders" : normalized.includes("시장") || normalized.includes("후보") ? "market" : "screen";
-    ask(value, fallbackAction);
+    ask(value);
     setPrompt("");
   };
   const toggleExpanded = () => {
@@ -258,22 +172,7 @@ export function AiCopilot() {
         <div className="flex items-center gap-1"><Button variant="ghost" size="icon-sm" onClick={toggleExpanded} aria-label={expanded ? "코파일럿 축소" : "코파일럿 확대"}>{expanded ? <Minimize2 /> : <Maximize2 />}</Button><Button variant="ghost" size="icon-sm" onClick={() => setOpen(false)} aria-label="코파일럿 닫기"><X /></Button></div>
       </header>
 
-      <div className="grid grid-cols-2 gap-0.5 border-b border-border bg-muted/30 p-1">
-        <button
-          type="button"
-          onClick={() => setCopilotMode("kis")}
-          className={cn("rounded-md py-1.5 text-[10px] font-medium transition", isKis ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}
-        >
-          KIS 모의계좌
-        </button>
-        <button
-          type="button"
-          onClick={() => setCopilotMode("local")}
-          className={cn("rounded-md py-1.5 text-[10px] font-medium transition", !isKis ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}
-        >
-          로컬 시뮬레이터
-        </button>
-      </div>
+      <div className="border-b border-border bg-muted/30 px-3 py-2 text-center text-[10px] font-medium text-emerald-600 dark:text-emerald-400">KIS 모의계좌 전용 코파일럿</div>
 
       <div className="grid grid-cols-2 border-b border-border bg-muted/20 text-[9px]"><div className="border-r border-border px-3 py-2"><span className="text-muted-foreground">모델 연결</span><p className={cn("mt-0.5 font-medium", status.data?.model_connected ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.model_connected ? `${status.data.provider} / ${status.data.model}${status.data.context7_connected ? " · Context7" : ""}` : "연결 대기"}</p></div><div className="px-3 py-2"><span className="text-muted-foreground">자동 주문 권한</span><p className={cn("mt-0.5 font-medium", status.data?.auto_execution_enabled ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>{status.data?.auto_execution_enabled ? "모의 자동운용" : "안전 잠금"}</p></div></div>
 
@@ -295,7 +194,7 @@ export function AiCopilot() {
                 )}
               >
                 {message.content ||
-                  (thinking && index === messages.length - 1 ? "로컬 모델이 생각하는 중..." : "")}
+                  (thinking && index === messages.length - 1 ? "KIS 계좌를 분석하는 중..." : "")}
                 {message.kisProposal && (
                   <div className="mt-2 flex gap-2">
                     <Button
@@ -435,13 +334,3 @@ function loadPanelRect(): PanelRect | null {
 function QuickAction({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) { return <button type="button" onClick={onClick} disabled={disabled} className="rounded-lg border border-border bg-background px-2.5 py-2 text-left text-[10px] font-medium transition hover:bg-muted active:translate-y-px disabled:opacity-50">{label}</button>; }
 
 function routeLabel(pathname: string) { if (pathname === "/") return "AI 운용 콘솔"; if (pathname.startsWith("/market")) return "시장"; if (pathname.startsWith("/risk")) return "리스크"; if (pathname.startsWith("/orders")) return "주문"; if (pathname.startsWith("/alerts")) return "알림"; if (pathname.startsWith("/screener")) return "종목 탐색"; if (pathname.startsWith("/watchlist")) return "관심종목"; return "현재 화면"; }
-
-function buildResponse(action: CopilotAction, context: { risk?: Awaited<ReturnType<typeof getPortfolioRisk>>; candidates: Awaited<ReturnType<typeof getAgentCandidates>>; runs: Awaited<ReturnType<typeof getAgentRuns>>; orders: Awaited<ReturnType<typeof getOrders>>; scope: string; stockCode: string | null }) {
-  const { risk, candidates, runs, orders, scope, stockCode } = context;
-  if (!risk) return "계좌 데이터를 불러오는 중입니다. 잠시 후 다시 실행해 주세요.";
-  if (action === "risk") return `총 수익률은 ${risk.total_return_pct.toFixed(2)}%, 투자 비중은 ${risk.invested_ratio_pct.toFixed(1)}%입니다. 최대 종목 비중은 ${risk.max_position_weight_pct.toFixed(1)}%이며 현재 위험 신호는 ${risk.risk_flags.length}건입니다.${risk.risk_flags[0] ? `\n우선 확인: ${risk.risk_flags[0].message}` : "\n즉시 조치가 필요한 위험 신호는 없습니다."}`;
-  if (action === "market") { const ranked = [...candidates].filter((item) => item.change_pct !== null).sort((a, b) => Math.abs(b.change_pct ?? 0) - Math.abs(a.change_pct ?? 0)).slice(0, 3); return `분석 가능한 후보는 ${candidates.length}개입니다.${ranked.length ? `\n변동성 상위: ${ranked.map((item) => `${item.name} ${item.change_pct?.toFixed(2)}%`).join(", ")}` : "\n후보 가격 데이터가 아직 충분하지 않습니다."}`; }
-  if (action === "orders") { const pending = orders.filter((order) => order.status === "pending"); const linked = runs[0]?.order_ids.length ?? 0; return `대기 주문은 ${pending.length}건, 최근 AI 판단에 연결된 주문은 ${linked}건입니다.${pending[0] ? `\n먼저 검토할 주문: ${pending[0].code} ${pending[0].side === "buy" ? "매수" : "매도"} ${pending[0].quantity}주` : "\n현재 체결을 기다리는 주문은 없습니다."}`; }
-  const stock = stockCode ? candidates.find((item) => item.code === stockCode) : null;
-  return `${scope}을 기준으로 분석했습니다. 계좌 투자 비중은 ${risk.invested_ratio_pct.toFixed(1)}%, 위험 신호는 ${risk.risk_flags.length}건, 분석 후보는 ${candidates.length}개입니다.${stock ? `\n${stock.name}은 현재 AI 후보군에 포함되어 있으며 최근 변동률은 ${stock.change_pct?.toFixed(2) ?? "-"}%입니다.` : ""}`;
-}

@@ -2,9 +2,8 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { Download, X } from "lucide-react";
-import { toast } from "sonner";
-import { ApiError, cancelOrder, getKisBrokerOrders, getOrders } from "@/lib/api";
+import { Download } from "lucide-react";
+import { getKisBrokerOrders } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -12,19 +11,14 @@ import { RefreshBadge } from "@/components/refresh-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useAccountSource } from "@/components/account-source-provider";
 
 const KRW = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 0 });
 
 export default function OrdersPage() {
-  const { source } = useAccountSource();
-  const isKis = source === "kis";
-  const orders = useSWR(isKis ? null : "/api/orders", getOrders, { refreshInterval: 10000 });
-  const kisOrders = useSWR(isKis ? "/api/kis/broker-orders" : null, getKisBrokerOrders, { refreshInterval: 10000 });
+  const kisOrders = useSWR("/api/kis/broker-orders", getKisBrokerOrders, { refreshInterval: 10000 });
   const [side, setSide] = useState<"all" | "buy" | "sell">("all");
   const [query, setQuery] = useState("");
-  const allRows = useMemo<DisplayOrder[]>(() => isKis
-    ? (kisOrders.data ?? []).map((order) => ({
+  const allRows = useMemo<DisplayOrder[]>(() => (kisOrders.data ?? []).map((order) => ({
         id: order.broker_order_id,
         time: formatKisOrderTime(order.order_time),
         code: order.code,
@@ -35,22 +29,7 @@ export default function OrdersPage() {
         filledQuantity: order.filled_quantity,
         price: order.avg_fill_price ?? 0,
         status: order.status,
-        cancellable: false,
-      }))
-    : (orders.data ?? []).map((order) => ({
-        id: String(order.id),
-        localId: order.id,
-        time: new Date(order.filled_at).toLocaleString("ko-KR"),
-        code: order.code,
-        name: null,
-        side: order.side,
-        orderType: order.order_type,
-        quantity: order.quantity,
-        filledQuantity: order.status === "filled" ? order.quantity : 0,
-        price: order.status === "pending" ? order.limit_price ?? order.price : order.price,
-        status: order.status,
-        cancellable: order.status === "pending",
-      })), [isKis, kisOrders.data, orders.data]);
+      })), [kisOrders.data]);
   const rows = useMemo(
     () => allRows.filter((order) => (side === "all" || order.side === side) && order.code.includes(query.trim())),
     [allRows, query, side]
@@ -60,28 +39,18 @@ export default function OrdersPage() {
   const buyValue = filledRows.filter((order) => order.side === "buy").reduce((sum, order) => sum + order.filledQuantity * order.price, 0);
   const sellValue = filledRows.filter((order) => order.side === "sell").reduce((sum, order) => sum + order.filledQuantity * order.price, 0);
 
-  const cancel = async (orderId: number) => {
-    try {
-      await cancelOrder(orderId);
-      orders.mutate();
-      toast.success("대기주문을 취소했습니다.");
-    } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "대기주문 취소 실패");
-    }
-  };
-
   return (
     <div className="space-y-8">
       <section className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Orders</p>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">주문내역</h1>
-          <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{isKis ? "한국투자증권 모의계좌의 당일 주문과 부분 체결을 확인합니다." : "로컬 체결 흐름을 필터링하고 CSV로 보관합니다."}</p>
+          <p className="max-w-2xl text-sm leading-6 text-muted-foreground">한국투자증권 모의계좌의 당일 주문과 부분 체결을 확인합니다.</p>
         </div>
         <RefreshBadge
-          hasError={Boolean(isKis ? kisOrders.error : orders.error)}
-          isValidating={isKis ? kisOrders.isValidating : orders.isValidating}
-          onRefresh={() => isKis ? kisOrders.mutate() : orders.mutate()}
+          hasError={Boolean(kisOrders.error)}
+          isValidating={kisOrders.isValidating}
+          onRefresh={() => kisOrders.mutate()}
         />
       </section>
 
@@ -154,11 +123,7 @@ export default function OrdersPage() {
                     <TableCell className="text-right font-mono">{order.price ? `${KRW.format(order.price)}원` : "-"}</TableCell>
                     <TableCell>{statusLabel(order.status)}</TableCell>
                     <TableCell className="text-right">
-                      {order.cancellable && order.localId !== undefined && (
-                        <Button variant="ghost" size="icon-sm" onClick={() => cancel(order.localId!)} aria-label="대기주문 취소">
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
+                      <span className="text-[10px] text-muted-foreground">KIS</span>
                     </TableCell>
                   </TableRow>
                 ))
@@ -188,7 +153,7 @@ function formatCompactPrice(value: number) {
   return `${new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 }).format(value)}원`;
 }
 
-type DisplayOrder = { id: string; localId?: number; time: string; code: string; name: string | null; side: "buy" | "sell"; orderType: "market" | "limit"; quantity: number; filledQuantity: number; price: number; status: string; cancellable: boolean };
+type DisplayOrder = { id: string; time: string; code: string; name: string | null; side: "buy" | "sell"; orderType: "market" | "limit"; quantity: number; filledQuantity: number; price: number; status: string };
 
 function formatKisOrderTime(value: string) { return value.length === 6 ? `${value.slice(0, 2)}:${value.slice(2, 4)}:${value.slice(4, 6)}` : value || "-"; }
 

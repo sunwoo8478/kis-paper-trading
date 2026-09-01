@@ -3,18 +3,14 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { AlertTriangle, ShieldCheck } from "lucide-react";
-import { getKisBalance, getKisPortfolioHistory, getPortfolioRisk } from "@/lib/api";
+import { getKisBalance, getKisPortfolioHistory } from "@/lib/api";
 import { changeColorClass, formatChangePct, formatPrice } from "@/lib/format";
 import { RefreshBadge } from "@/components/refresh-badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useAccountSource } from "@/components/account-source-provider";
 
 export default function RiskPage() {
-  const { source } = useAccountSource();
-  const isKis = source === "kis";
-  const risk = useSWR(isKis ? null : "/api/portfolio/risk", getPortfolioRisk, { refreshInterval: 10000 });
-  const kisBalance = useSWR(isKis ? "/api/kis/balance" : null, getKisBalance, { refreshInterval: 10000 });
-  const kisHistory = useSWR(isKis ? "/api/kis/history" : null, getKisPortfolioHistory, { refreshInterval: 10000 });
+  const kisBalance = useSWR("/api/kis/balance", getKisBalance, { refreshInterval: 10000 });
+  const kisHistory = useSWR("/api/kis/history", getKisPortfolioHistory, { refreshInterval: 10000 });
   const balance = kisBalance.data;
   const initialCapital = balance ? balance.total_value - balance.pnl : 0;
   const kisPositions = (balance?.positions ?? []).map((position) => ({
@@ -26,7 +22,7 @@ export default function RiskPage() {
   const maxPositionWeight = kisPositions.reduce((max, position) => Math.max(max, position.weight_pct), 0);
   const weights = kisPositions.map((position) => position.weight_pct / 100);
   const kisDrawdown = maxDrawdownPct((kisHistory.data ?? []).map((snapshot) => snapshot.total_value));
-  const data = isKis && balance ? {
+  const data = balance ? {
     total_value: balance.total_value,
     total_return_pct: initialCapital ? balance.pnl / initialCapital * 100 : 0,
     invested_ratio_pct: balance.total_value ? balance.evaluated_value / balance.total_value * 100 : 0,
@@ -39,7 +35,7 @@ export default function RiskPage() {
     evaluated_value: balance.evaluated_value,
     positions: kisPositions,
     risk_flags: kisPositions.filter((position) => position.weight_pct > 20).map((position) => ({ level: "warning" as const, code: position.code, message: `${position.name} 비중이 20%를 초과했습니다.` })),
-  } : risk.data;
+  } : undefined;
 
   return (
     <div className="space-y-6">
@@ -47,9 +43,9 @@ export default function RiskPage() {
         <div>
           <p className="text-xs text-muted-foreground">Portfolio risk</p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">계좌 리스크 워크스페이스</h1>
-          <p className="mt-2 text-sm text-muted-foreground">{isKis ? `KIS 모의계좌 ${balance?.account_masked ?? "연결 확인 중"}` : "로컬 시뮬레이터"}의 노출, 집중도와 손익을 점검합니다.</p>
+          <p className="mt-2 text-sm text-muted-foreground">KIS 모의계좌 {balance?.account_masked ?? "연결 확인 중"}의 노출, 집중도와 손익을 점검합니다.</p>
         </div>
-        <RefreshBadge hasError={Boolean(isKis ? kisBalance.error || kisHistory.error : risk.error)} isValidating={isKis ? kisBalance.isValidating || kisHistory.isValidating : risk.isValidating} onRefresh={() => isKis ? Promise.all([kisBalance.mutate(), kisHistory.mutate()]) : risk.mutate()} />
+        <RefreshBadge hasError={Boolean(kisBalance.error || kisHistory.error)} isValidating={kisBalance.isValidating || kisHistory.isValidating} onRefresh={() => Promise.all([kisBalance.mutate(), kisHistory.mutate()])} />
       </header>
 
       <section className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border bg-border md:grid-cols-3 xl:grid-cols-6">
@@ -87,7 +83,7 @@ export default function RiskPage() {
                 ) : (
                   data?.positions.map((position) => (
                     <TableRow key={position.code}>
-                      <TableCell><Link href={`/stocks/${position.code}`} className="font-medium hover:underline">{"name" in position ? position.name : position.code}<span className="ml-2 font-mono text-[10px] text-muted-foreground">{position.code}</span></Link></TableCell>
+                      <TableCell><Link href={`/stocks/${position.code}`} className="font-medium hover:underline">{position.name}<span className="ml-2 font-mono text-[10px] text-muted-foreground">{position.code}</span></Link></TableCell>
                       <TableCell className="text-right font-mono">{position.quantity}</TableCell>
                       <TableCell className="text-right font-mono">{formatPrice(position.avg_price)}</TableCell>
                       <TableCell className="text-right font-mono">{formatPrice(position.current_price)}</TableCell>

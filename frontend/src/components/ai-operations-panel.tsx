@@ -4,40 +4,24 @@ import { useState } from "react";
 import useSWR from "swr";
 import { Activity, Bot, Clock3, Gauge, Power, RefreshCw, TrendingDown } from "lucide-react";
 import {
-  getAutonomousStatus,
-  getExperimentStatus,
   getKisAutonomousStatus,
-  runAutonomousCycle,
   runKisAutonomousCycle,
-  startAutonomousTrading,
   startKisAutonomousTrading,
-  stopAutonomousTrading,
   stopKisAutonomousTrading,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 
-export function AiOperationsPanel({ source = "kis" }: { source?: "kis" | "local" }) {
-  const isKis = source === "kis";
-  const localAutonomous = useSWR(isKis ? null : "/api/agent/autonomous/status", getAutonomousStatus, { refreshInterval: 5000 });
-  const kisAutonomous = useSWR(isKis ? "/api/kis/autonomous/status" : null, getKisAutonomousStatus, { refreshInterval: 5000 });
-  const experimentStatus = useSWR(isKis ? null : "/api/agent/experiment", getExperimentStatus, { refreshInterval: 5000 });
+export function AiOperationsPanel() {
+  const kisAutonomous = useSWR("/api/kis/autonomous/status", getKisAutonomousStatus, { refreshInterval: 5000 });
   const [pendingAction, setPendingAction] = useState<"toggle" | "run" | null>(null);
-  const engine = isKis ? kisAutonomous.data : localAutonomous.data;
-  const latestOrderIds = isKis
-    ? kisAutonomous.data?.latest_cycle?.broker_order_ids
-    : localAutonomous.data?.latest_cycle?.order_ids;
-  const experiment = experimentStatus.data?.experiment;
+  const engine = kisAutonomous.data;
+  const latestOrderIds = kisAutonomous.data?.latest_cycle?.broker_order_ids;
 
   const toggleEngine = async () => {
     setPendingAction("toggle");
     try {
-      if (isKis) {
-        const next = engine?.enabled ? await stopKisAutonomousTrading() : await startKisAutonomousTrading();
-        await kisAutonomous.mutate(next, { revalidate: false });
-      } else {
-        const next = engine?.enabled ? await stopAutonomousTrading() : await startAutonomousTrading();
-        await localAutonomous.mutate(next, { revalidate: false });
-      }
+      const next = engine?.enabled ? await stopKisAutonomousTrading() : await startKisAutonomousTrading();
+      await kisAutonomous.mutate(next, { revalidate: false });
     } finally {
       setPendingAction(null);
     }
@@ -46,10 +30,8 @@ export function AiOperationsPanel({ source = "kis" }: { source?: "kis" | "local"
   const runNow = async () => {
     setPendingAction("run");
     try {
-      if (isKis) await runKisAutonomousCycle();
-      else await runAutonomousCycle();
-      if (isKis) await kisAutonomous.mutate();
-      else await localAutonomous.mutate();
+      await runKisAutonomousCycle();
+      await kisAutonomous.mutate();
     } finally {
       setPendingAction(null);
     }
@@ -66,10 +48,10 @@ export function AiOperationsPanel({ source = "kis" }: { source?: "kis" | "local"
       </header>
 
       <div className="grid flex-1 grid-cols-2">
-        <Cell icon={Power} label="24H 모의 엔진" value={engine?.enabled ? isKis ? "KIS ACTIVE" : "LOCAL ACTIVE" : "STOPPED"} tone={engine?.enabled ? "ready" : "warning"} />
+        <Cell icon={Power} label="24H 모의 엔진" value={engine?.enabled ? "KIS ACTIVE" : "STOPPED"} tone={engine?.enabled ? "ready" : "warning"} />
         <Cell icon={Clock3} label="시장 상태" value={engine?.market_open ? "정규장" : "장외 감시"} tone={engine?.market_open ? "ready" : undefined} />
-        <Cell icon={Gauge} label={isKis ? "실행 계좌" : "AI 실험 수익률"} value={isKis ? "KIS 모의투자" : formatPct(experiment?.return_pct)} tone={isKis || (experiment?.return_pct ?? 0) >= 0 ? "ready" : "warning"} />
-        <Cell icon={TrendingDown} label={isKis ? "엔진 단계" : "실험 최대 낙폭"} value={isKis ? cycleLabel(engine?.phase) : formatPct(experiment?.max_drawdown_pct)} tone={isKis && engine?.phase === "error" || (experiment?.max_drawdown_pct ?? 0) < -3 ? "warning" : undefined} />
+        <Cell icon={Gauge} label="실행 계좌" value="KIS 모의투자" tone="ready" />
+        <Cell icon={TrendingDown} label="엔진 단계" value={cycleLabel(engine?.phase)} tone={engine?.phase === "error" ? "warning" : undefined} />
         <Cell icon={Activity} label="최근 사이클" value={cycleLabel(engine?.latest_cycle?.status)} tone={engine?.latest_cycle?.status === "error" ? "warning" : undefined} />
         <Cell icon={Bot} label="최근 자율 주문" value={latestOrderLabel(latestOrderIds)} />
       </div>
@@ -81,8 +63,8 @@ export function AiOperationsPanel({ source = "kis" }: { source?: "kis" | "local"
         <Button type="button" size="sm" variant="outline" onClick={runNow} disabled={!engine?.enabled || pendingAction !== null || engine?.running} className="text-[10px]">
           <RefreshCw className={`h-3.5 w-3.5 ${pendingAction === "run" ? "animate-spin" : ""}`} />즉시 분석
         </Button>
-        {(kisAutonomous.error || localAutonomous.error || experimentStatus.error) && <p className="col-span-2 text-[9px] text-destructive">자율운용 상태를 불러오지 못했습니다.</p>}
-        <p className="col-span-2 truncate text-[9px] text-muted-foreground">{isKis ? "한국투자증권 대회형 모의계좌 주문" : experiment ? `${experiment.name} / KOSPI 대비 ${formatPct(experiment.alpha_pct ?? undefined)} / 실제 주문 없음` : "로컬 실험 기준선 준비 중"}</p>
+        {kisAutonomous.error && <p className="col-span-2 text-[9px] text-destructive">자율운용 상태를 불러오지 못했습니다.</p>}
+        <p className="col-span-2 truncate text-[9px] text-muted-foreground">한국투자증권 대회형 모의계좌 주문</p>
       </div>
     </section>
   );
@@ -95,4 +77,3 @@ function Cell({ icon: Icon, label, value, tone }: { icon: typeof Bot; label: str
 function cnTone(tone?: "ready" | "warning") { return `mt-0.5 truncate font-mono text-[10px] font-medium ${tone === "ready" ? "text-emerald-600 dark:text-emerald-400" : tone === "warning" ? "text-amber-600 dark:text-amber-400" : "text-foreground"}`; }
 function cycleLabel(value?: string) { if (!value) return "대기"; if (value === "executed") return "주문 실행"; if (value === "observed") return "관찰 완료"; if (value === "market_closed") return "장외 대기"; if (value === "error") return "오류"; return value; }
 function latestOrderLabel(orderIds?: (number | string)[]) { return orderIds?.length ? `#${orderIds.at(-1)} / ${orderIds.length}건` : "신규 주문 없음"; }
-function formatPct(value?: number) { return value === undefined ? "-" : `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`; }
