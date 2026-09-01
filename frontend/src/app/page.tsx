@@ -18,7 +18,7 @@ const EMBEDDED_CARD = "h-full min-w-0 gap-0 rounded-none border-0 py-0 shadow-no
 
 export default function DashboardPage() {
   const kisBalance = useSWR("/api/kis/balance", getKisBalance, { refreshInterval: 10000 });
-  const kisBuyingPower = useSWR("/api/kis/buying-power", getKisBuyingPower, { refreshInterval: 10000 });
+  const kisBuyingPower = useSWR("/api/kis/buying-power", () => getKisBuyingPower(), { refreshInterval: 10000 });
   const kisHistory = useSWR("/api/kis/history", getKisPortfolioHistory, { refreshInterval: 10000 });
   const kisOrders = useSWR("/api/kis/broker-orders", getKisBrokerOrders, { refreshInterval: 10000 });
   const kisEngine = useSWR("/api/kis/autonomous/status", getKisAutonomousStatus, { refreshInterval: 5000 });
