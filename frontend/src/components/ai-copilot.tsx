@@ -6,6 +6,7 @@ import useSWR from "swr";
 import { Bot, ChevronDown, CornerDownLeft, Maximize2, Minimize2, ShieldCheck, Sparkles, X } from "lucide-react";
 import {
   ApiError,
+  askKisCopilot,
   type CopilotChatMessage,
   getAgentCandidates,
   getAgentRuns,
@@ -13,6 +14,7 @@ import {
   getExperimentStatus,
   getOrders,
   getPortfolioRisk,
+  placeKisOrder,
   streamCopilot,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -39,6 +41,7 @@ export function AiCopilot() {
     { role: "assistant", content: "현재 화면과 계좌 데이터를 기준으로 운용 정보를 정리할 수 있습니다." },
   ]);
   const [thinking, setThinking] = useState(false);
+  const [kisSubmitting, setKisSubmitting] = useState<number | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const rectRef = useRef<PanelRect | null>(null);
@@ -103,6 +106,15 @@ export function AiCopilot() {
     const history = messages;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
 
+    const kisResult = await askKisCopilot(question).catch(() => null);
+    if (kisResult?.proposal) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: kisResult.answer, kisProposal: kisResult.proposal },
+      ]);
+      return;
+    }
+
     if (!status.data?.model_connected) {
       setMessages((prev) => [...prev, { role: "assistant", content: buildResponse(fallbackAction, context) }]);
       return;
@@ -152,6 +164,42 @@ export function AiCopilot() {
     } finally {
       setThinking(false);
     }
+  };
+
+  const confirmKisOrder = async (index: number) => {
+    const proposal = messages[index]?.kisProposal;
+    if (!proposal) return;
+    setKisSubmitting(index);
+    try {
+      const result = await placeKisOrder(proposal);
+      const sideLabel = proposal.side === "buy" ? "매수" : "매도";
+      setMessages((prev) => {
+        const next = [...prev];
+        next[index] = { ...next[index], kisProposal: null };
+        next.push({
+          role: "assistant",
+          content: `주문 전송 완료: ${proposal.name}(${proposal.code}) ${proposal.quantity}주 ${sideLabel}, 브로커 주문번호 ${result.broker_order_id ?? result.order_id}`,
+        });
+        return next;
+      });
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: error instanceof ApiError ? `주문 실패: ${error.message}` : "주문 전송 중 오류가 발생했습니다.",
+        },
+      ]);
+    } finally {
+      setKisSubmitting(null);
+    }
+  };
+  const cancelKisOrder = (index: number) => {
+    setMessages((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], kisProposal: null };
+      return next;
+    });
   };
 
   const run = (action: CopilotAction) => ask(QUICK_ACTION_PROMPTS[action], action);
@@ -225,6 +273,25 @@ export function AiCopilot() {
               >
                 {message.content ||
                   (thinking && index === messages.length - 1 ? "로컬 모델이 생각하는 중..." : "")}
+                {message.kisProposal && (
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => confirmKisOrder(index)}
+                      disabled={kisSubmitting === index}
+                    >
+                      확인
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => cancelKisOrder(index)}
+                      disabled={kisSubmitting === index}
+                    >
+                      취소
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           ))}

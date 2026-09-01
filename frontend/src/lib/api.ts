@@ -480,7 +480,27 @@ export async function askCopilot(
   return postJson<ChatResponse>("/api/agent/chat", { prompt, scope, stock_code: stockCode });
 }
 
-export type CopilotChatMessage = { role: "user" | "assistant"; content: string };
+export type KisOrderProposal = { code: string; name: string; side: "buy" | "sell"; quantity: number };
+export type KisChatResponse = { answer: string; proposal: KisOrderProposal | null };
+
+export async function askKisCopilot(prompt: string): Promise<KisChatResponse> {
+  return postJson<KisChatResponse>("/api/kis/chat", { prompt });
+}
+
+export async function placeKisOrder(proposal: KisOrderProposal): Promise<{
+  order_id: number;
+  broker_order_id: string | null;
+  code: string;
+  side: string;
+  quantity: number;
+  status: string;
+  order_type: string;
+  limit_price: number | null;
+}> {
+  return postJson("/api/kis/orders", { code: proposal.code, side: proposal.side, quantity: proposal.quantity });
+}
+
+export type CopilotChatMessage = { role: "user" | "assistant"; content: string; kisProposal?: KisOrderProposal | null };
 export type CopilotMeta = { order_ids: number[]; blocked: { decision: AgentDecision; reason: string }[] };
 const COPILOT_META_MARKER = "<<<COPILOT_META>>>";
 
