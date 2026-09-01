@@ -34,6 +34,30 @@ class _Client:
         self.cancelled = (broker_order_id, branch_code, quantity)
         return {"broker_order_id": broker_order_id, "status": "cancelled"}
 
+    def get_balance(self):
+        return {
+            "account_masked": "5020****-01",
+            "positions": [
+                {"code": "005930", "name": "삼성전자", "quantity": 6, "available_quantity": 6,
+                 "avg_price": 259167.0, "current_price": 260250.0, "market_value": 1561500.0,
+                 "pnl": 6500.0, "return_pct": 0.42},
+            ],
+            "cash": 47003658.0,
+            "settled_cash": 500000000.0,
+            "total_value": 501814136.0,
+            "purchase_value": 452932052.0,
+            "evaluated_value": 454810478.0,
+            "pnl": 1878426.0,
+            "source": "kis-paper",
+        }
+
+    def get_daily_orders(self):
+        return [
+            {"broker_order_id": "10001", "branch_code": "00950", "code": "005930", "name": "삼성전자",
+             "side": "buy", "requested_quantity": 6, "filled_quantity": 6, "remaining_quantity": 0,
+             "rejected_quantity": 0, "avg_fill_price": 259167.0, "status": "filled", "order_time": "121208"},
+        ]
+
 
 def _seed(db_path):
     conn = sqlite3.connect(db_path)
@@ -109,6 +133,52 @@ def test_kis_chat_parses_sell_command_into_proposal(tmp_path, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["proposal"] == {"code": "005930", "name": "삼성전자", "side": "sell", "quantity": 3}
+
+
+def test_kis_chat_answers_buying_power_from_kis_balance_not_local(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "chat-cash.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _seed(db_path)
+
+    with TestClient(app) as client:
+        app.state.kis_client = _Client()
+        response = client.post("/kis/chat", json={"prompt": "지금 매수 가능 금액이 얼마야?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["proposal"] is None
+    assert "47,003,658" in body["answer"]
+
+
+def test_kis_chat_answers_holdings_from_kis_balance(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "chat-holdings.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _seed(db_path)
+
+    with TestClient(app) as client:
+        app.state.kis_client = _Client()
+        response = client.post("/kis/chat", json={"prompt": "지금 보유종목 알려줘"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["proposal"] is None
+    assert "501,814,136" in body["answer"]
+    assert "삼성전자(005930)" in body["answer"]
+
+
+def test_kis_chat_answers_recent_orders_from_kis_daily_orders(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "chat-orders.db")
+    monkeypatch.setenv("DB_PATH", db_path)
+    _seed(db_path)
+
+    with TestClient(app) as client:
+        app.state.kis_client = _Client()
+        response = client.post("/kis/chat", json={"prompt": "최근주문 상태 어때?"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["proposal"] is None
+    assert "10001" in body["answer"]
 
 
 def test_kis_chat_returns_no_proposal_when_unclear(tmp_path, monkeypatch):
